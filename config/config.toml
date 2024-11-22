@@ -1,0 +1,7 @@
+port = "8080"
+backend = "mem"
+backend-address = "127.0.0.1:2379"
+
+[logger]
+level = "warn"
+filename = "tso.log"

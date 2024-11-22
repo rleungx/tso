@@ -1,0 +1,22 @@
+syntax = "proto3";
+package proto;
+
+option go_package = "./;proto";
+
+service TSO {
+    rpc GetTimestamp(stream GetTimestampRequest) returns (stream GetTimestampResponse) {}
+}
+
+message GetTimestampRequest {
+    uint32 count = 1;
+}
+
+message GetTimestampResponse {
+    uint32 count = 1;
+    Timestamp timestamp = 2;
+}
+
+message Timestamp {
+    int64 physical = 1;
+    int64 logical = 2;
+}
