@@ -25,7 +25,11 @@ func (s *Server) GetTS(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid count"})
 		return
 	}
-	physical, logical := s.timestampOracle.GenerateTimestamp(c.Request.Context(), uint32(count))
+	physical, logical, err := s.timestampOracle.GenerateTimestamp(c.Request.Context(), uint32(count))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate timestamp", "details": err.Error()})
+		return
+	}
 	// Create response
 	response := TimestampResponse{
 		Timestamp: &Timestamp{

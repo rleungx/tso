@@ -2,11 +2,19 @@ package tso
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/rleungx/tso/storage"
+)
+
+const (
+	// tsoUpdatePhysicalInterval is the interval to update the physical part of a tso.
+	tsoUpdatePhysicalInterval = 50 * time.Millisecond
+	// updateTimestampGuard is the min timestamp interval.
+	updateTimestampGuard = time.Millisecond
 )
 
 // ZeroTime is a zero time.
@@ -61,16 +69,16 @@ func (t *TimestampOracle) setPhysical(next time.Time, force bool) {
 }
 
 // GenerateTimestamp is used to generate a timestamp.
-func (t *TimestampOracle) GenerateTimestamp(ctx context.Context, count uint32) (physical int64, logical int64) {
+func (t *TimestampOracle) GenerateTimestamp(ctx context.Context, count uint32) (physical int64, logical int64, err error) {
 	t.Lock()
 	defer t.Unlock()
 	if t.physical == ZeroTime {
-		return 0, 0
+		return 0, 0, errors.New("timestamp oracle not initialized")
 	}
 	physical = t.physical.UnixNano() / int64(time.Millisecond)
 	t.logical += int64(count)
 	logical = t.logical
-	return physical, logical
+	return physical, logical, nil
 }
 
 // SyncTimestamp is used to synchronize the timestamp.
@@ -81,10 +89,10 @@ func (ts *TimestampOracle) SyncTimestamp(s storage.Storage) error {
 	}
 
 	next := time.Now()
-	// If the current system time minus the saved etcd timestamp is less than `UpdateTimestampGuard`,
-	// the timestamp allocation will start from the saved etcd timestamp temporarily.
-	if SubRealTimeByWallClock(next, last) < 150*time.Millisecond {
-		next = last.Add(150 * time.Millisecond)
+	// If the current system time minus the saved timestamp is less than `UpdateTimestampGuard`,
+	// the timestamp allocation will start from the saved timestamp temporarily.
+	if SubRealTimeByWallClock(next, last) < updateTimestampGuard {
+		next = last.Add(updateTimestampGuard)
 	}
 
 	save := next.Add(3 * time.Second)
@@ -100,7 +108,7 @@ func (ts *TimestampOracle) SyncTimestamp(s storage.Storage) error {
 
 // UpdateTimestamp is used to update the timestamp.
 func (ts *TimestampOracle) UpdateTimestamp(s storage.Storage) error {
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(tsoUpdatePhysicalInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -114,7 +122,7 @@ func (ts *TimestampOracle) UpdateTimestamp(s storage.Storage) error {
 
 			var next time.Time
 			// If the system time is greater, it will be synchronized with the system time.
-			if jetLag > time.Millisecond {
+			if jetLag > updateTimestampGuard {
 				next = now
 			} else if prevLogical > maxLogical/2 {
 				// The reason choosing maxLogical/2 here is that it's big enough for common cases.
@@ -126,8 +134,8 @@ func (ts *TimestampOracle) UpdateTimestamp(s storage.Storage) error {
 			}
 
 			// It is not safe to increase the physical time to `next`.
-			// The time window needs to be updated and saved to etcd.
-			if SubRealTimeByWallClock(ts.lastSavedTime.Load().(time.Time), next) <= time.Millisecond {
+			// The time window needs to be updated and saved to storage.
+			if SubRealTimeByWallClock(ts.lastSavedTime.Load().(time.Time), next) <= updateTimestampGuard {
 				save := next.Add(3 * time.Second)
 				if err := s.SaveTimestamp(save); err != nil {
 					return err

@@ -167,7 +167,10 @@ func (s *Server) GetTimestamp(reqStream proto.TSO_GetTimestampServer) error {
 			return err
 		}
 
-		physical, logical := s.timestampOracle.GenerateTimestamp(reqStream.Context(), req.GetCount())
+		physical, logical, err := s.timestampOracle.GenerateTimestamp(reqStream.Context(), req.GetCount())
+		if err != nil {
+			return err
+		}
 
 		// Generate timestamp logic
 		timestamp := &proto.Timestamp{
