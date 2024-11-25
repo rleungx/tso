@@ -19,6 +19,12 @@ type TimestampResponse struct {
 
 // GetTS handles the timestamp request
 func (s *Server) GetTS(c *gin.Context) {
+	// Add active status check
+	if !s.IsActive() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "server is not active"})
+		return
+	}
+
 	countStr := c.Query("count")
 	count, err := strconv.ParseUint(countStr, 10, 32) // Convert string to uint32
 	if err != nil {

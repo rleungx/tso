@@ -14,7 +14,7 @@ type MemStorage struct {
 }
 
 // NewMemStorage creates a new instance of MemStorage
-func NewMemStorage() (*MemStorage, error) {
+func NewMemStorage() (Storage, error) {
 	return &MemStorage{
 		data: make(map[string]interface{}),
 	}, nil

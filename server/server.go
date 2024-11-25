@@ -7,10 +7,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rleungx/tso/config"
+	"github.com/rleungx/tso/election"
 	"github.com/rleungx/tso/logger"
 	"github.com/rleungx/tso/proto"
 	"github.com/rleungx/tso/storage"
@@ -21,7 +24,36 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+// tsoUpdatePhysicalInterval is the interval to update the physical part of a tso.
+var tsoUpdatePhysicalInterval = 50 * time.Millisecond
+
+// ServiceRole represents the service role
+type ServiceRole int32
+
+const (
+	// RoleStandby indicates standby status, not providing service
+	RoleStandby ServiceRole = iota
+	// RoleActive indicates active status, providing service
+	RoleActive
+)
+
+func (r ServiceRole) String() string {
+	switch r {
+	case RoleStandby:
+		return "Standby"
+	case RoleActive:
+		return "Active"
+	default:
+		return "Unknown"
+	}
+}
+
+func (s *Server) IsActive() bool {
+	return ServiceRole(s.role.Load()) == RoleActive
+}
+
 type Server struct {
+	mu     sync.RWMutex
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -30,6 +62,8 @@ type Server struct {
 	config          *config.Config
 	storage         storage.Storage
 	timestampOracle *tso.TimestampOracle
+	election        election.Election
+	role            atomic.Int32
 }
 
 // NewServer creates a new server instance
@@ -53,9 +87,13 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	s.timestampOracle = tso.NewTimestampOracle(s.ctx, s.storage)
-	s.timestampOracle.SyncTimestamp(s.storage)
-	go s.timestampOracle.UpdateTimestamp(s.storage)
+	// Initialize election
+	s.election, err = election.NewElection(s.ctx, s.storage)
+	if err != nil {
+		return err
+	}
+
+	go s.electionLoop()
 
 	// Create a listener
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.config.Host, s.config.Port))
@@ -186,5 +224,91 @@ func (s *Server) GetTimestamp(reqStream proto.TSO_GetTimestampServer) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *Server) electionLoop() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			logger.Info("election loop context done, exiting")
+			return
+		default:
+			logger.Info("starting election campaign")
+			// Try to become the active node first
+			err := s.election.Campaign(s.ctx)
+			if err != nil {
+				logger.Error("failed to campaign for election", zap.Error(err))
+				s.becomeStandby()
+				logger.Info("watching for election changes")
+				s.election.Watch(s.ctx)
+				continue
+			}
+
+			s.becomeActive()
+			// If handleActiveState returns, it means re-election is needed
+			logger.Info("exited active state, will retry election")
+		}
+	}
+}
+
+func (s *Server) becomeActive() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if ServiceRole(s.role.Load()) == RoleActive {
+		return nil
+	}
+
+	logger.Info("becoming active node")
+
+	// 1. Initialize TimestampOracle
+	if s.timestampOracle == nil {
+		s.timestampOracle = tso.NewTimestampOracle(s.ctx, s.storage)
+	}
+
+	// 2. Sync timestamp
+	if err := s.timestampOracle.SyncTimestamp(s.storage); err != nil {
+		logger.Error("failed to sync timestamp", zap.Error(err))
+		if resignErr := s.election.Resign(); resignErr != nil {
+			logger.Error("failed to resign from election", zap.Error(resignErr))
+		}
+		return err
+	}
+	defer s.timestampOracle.Reset()
+	// 4. Update role
+	s.role.Store(int32(RoleActive))
+	logger.Info("became active node")
+	defer s.role.Store(int32(RoleStandby))
+	ticker := time.NewTicker(tsoUpdatePhysicalInterval)
+	defer ticker.Stop()
+
+	// 3. Start timestamp update
+	for {
+		select {
+		case <-s.ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := s.timestampOracle.UpdateTimestamp(s.storage); err != nil {
+				logger.Error("failed to update timestamp", zap.Error(err))
+				if resignErr := s.election.Resign(); resignErr != nil {
+					logger.Error("failed to resign from election after update failure", zap.Error(resignErr))
+				}
+			}
+		}
+	}
+}
+
+func (s *Server) becomeStandby() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if ServiceRole(s.role.Load()) == RoleStandby {
+		return nil
+	}
+
+	// 2. Update role
+	s.role.Store(int32(RoleStandby))
+	logger.Info("became standby node")
 	return nil
 }

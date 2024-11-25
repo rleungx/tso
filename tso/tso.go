@@ -11,9 +11,7 @@ import (
 )
 
 const (
-	// tsoUpdatePhysicalInterval is the interval to update the physical part of a tso.
-	tsoUpdatePhysicalInterval = 50 * time.Millisecond
-	// updateTimestampGuard is the min timestamp interval.
+	// updateTimestampGuard is the minimum timestamp interval.
 	updateTimestampGuard = time.Millisecond
 )
 
@@ -108,44 +106,36 @@ func (ts *TimestampOracle) SyncTimestamp(s storage.Storage) error {
 
 // UpdateTimestamp is used to update the timestamp.
 func (ts *TimestampOracle) UpdateTimestamp(s storage.Storage) error {
-	ticker := time.NewTicker(tsoUpdatePhysicalInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ts.ctx.Done():
-			return nil
-		case <-ticker.C:
-			prevPhysical, prevLogical := ts.get()
+	prevPhysical, prevLogical := ts.get()
 
-			now := time.Now()
-			jetLag := SubRealTimeByWallClock(now, prevPhysical)
+	now := time.Now()
+	jetLag := SubRealTimeByWallClock(now, prevPhysical)
 
-			var next time.Time
-			// If the system time is greater, it will be synchronized with the system time.
-			if jetLag > updateTimestampGuard {
-				next = now
-			} else if prevLogical > maxLogical/2 {
-				// The reason choosing maxLogical/2 here is that it's big enough for common cases.
-				// Because there is enough timestamp can be allocated before next update.
-				next = prevPhysical.Add(time.Millisecond)
-			} else {
-				// It will still use the previous physical time to alloc the timestamp.
-				return nil
-			}
-
-			// It is not safe to increase the physical time to `next`.
-			// The time window needs to be updated and saved to storage.
-			if SubRealTimeByWallClock(ts.lastSavedTime.Load().(time.Time), next) <= updateTimestampGuard {
-				save := next.Add(3 * time.Second)
-				if err := s.SaveTimestamp(save); err != nil {
-					return err
-				}
-				ts.lastSavedTime.Store(save)
-			}
-			// save into memory
-			ts.setPhysical(next, false)
-		}
+	var next time.Time
+	// If the system time is greater, it will be synchronized with the system time.
+	if jetLag > updateTimestampGuard {
+		next = now
+	} else if prevLogical > maxLogical/2 {
+		// The reason choosing maxLogical/2 here is that it's big enough for common cases.
+		// Because there is enough timestamp can be allocated before next update.
+		next = prevPhysical.Add(time.Millisecond)
+	} else {
+		// It will still use the previous physical time to alloc the timestamp.
+		return nil
 	}
+
+	// It is not safe to increase the physical time to `next`.
+	// The time window needs to be updated and saved to storage.
+	if SubRealTimeByWallClock(ts.lastSavedTime.Load().(time.Time), next) <= updateTimestampGuard {
+		save := next.Add(3 * time.Second)
+		if err := s.SaveTimestamp(save); err != nil {
+			return err
+		}
+		ts.lastSavedTime.Store(save)
+	}
+	// save into memory
+	ts.setPhysical(next, false)
+	return nil
 }
 
 // SubRealTimeByWallClock returns the duration between two different time.Time structs.
@@ -158,4 +148,14 @@ func SubRealTimeByWallClock(after, before time.Time) time.Duration {
 // SubTSOPhysicalByWallClock returns the duration between two different TSOs' physical times with millisecond precision.
 func SubTSOPhysicalByWallClock(after, before time.Time) int64 {
 	return after.UnixNano()/int64(time.Millisecond) - before.UnixNano()/int64(time.Millisecond)
+}
+
+// Reset resets the TimestampOracle to its initial state
+func (t *TimestampOracle) Reset() {
+	t.Lock()
+	defer t.Unlock()
+
+	t.physical = ZeroTime
+	t.logical = 0
+	t.lastSavedTime.Store(ZeroTime)
 }
