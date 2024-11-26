@@ -2,12 +2,17 @@ package client
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/rleungx/tso/proto"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type TSOClient struct {
@@ -18,6 +23,10 @@ type TSOClient struct {
 	wg        sync.WaitGroup
 	ctx       context.Context
 	cancel    context.CancelFunc
+	endpoints []string         // All available server addresses
+	current   int              // Current server index
+	connMu    sync.RWMutex     // Protects connection-related fields
+	conn      *grpc.ClientConn // Current connection
 }
 
 // Single timestamp request
@@ -27,15 +36,25 @@ type timestampRequest struct {
 }
 
 // NewTSOClient creates a new TSO client
-func NewTSOClient(conn *grpc.ClientConn, opts ...Option) *TSOClient {
+func NewTSOClient(endpoints []string, opts ...Option) (*TSOClient, error) {
+	if len(endpoints) == 0 {
+		return nil, errors.New("empty endpoints")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &TSOClient{
-		client:    proto.NewTSOClient(conn),
+		endpoints: endpoints,
 		requests:  make(chan *timestampRequest, 10000),
-		batchSize: 100,                   // Default batch size
-		maxWait:   time.Millisecond * 10, // Default max wait time
+		batchSize: 100,
+		maxWait:   time.Millisecond * 10,
 		ctx:       ctx,
 		cancel:    cancel,
+	}
+
+	// Initialize the first connection
+	if err := c.switchToNextEndpoint(); err != nil {
+		cancel()
+		return nil, err
 	}
 
 	// Apply options
@@ -43,11 +62,10 @@ func NewTSOClient(conn *grpc.ClientConn, opts ...Option) *TSOClient {
 		opt(c)
 	}
 
-	// Start background batch processing
 	c.wg.Add(1)
 	go c.batchProcessor()
 
-	return c
+	return c, nil
 }
 
 // Option defines client options
@@ -136,39 +154,80 @@ func (c *TSOClient) processBatch(requests []*timestampRequest) {
 		return
 	}
 
-	stream, err := c.client.GetTimestamp(c.ctx)
-	if err != nil {
-		c.failAllRequests(requests, err)
-		return
-	}
-	defer stream.CloseSend()
+	maxRetries := len(c.endpoints) * 2 // Maximum retries is twice the number of endpoints
+	var lastErr error
 
-	// Send batch request
-	if err := stream.Send(&proto.GetTimestampRequest{
-		Count: uint32(len(requests)),
-	}); err != nil {
-		c.failAllRequests(requests, err)
-		return
-	}
+	for retry := 0; retry < maxRetries; retry++ {
+		if retry > 0 {
+			// Switch to the next endpoint before retrying
+			if err := c.switchToNextEndpoint(); err != nil {
+				lastErr = err
+				continue
+			}
 
-	// Receive response
-	resp, err := stream.Recv()
-	if err != nil {
-		c.failAllRequests(requests, err)
-		return
-	}
-
-	// Distribute results
-	baseTimestamp := resp.Timestamp
-	for i, req := range requests {
-		ts := &proto.Timestamp{
-			Physical: baseTimestamp.Physical,
-			Logical:  baseTimestamp.Logical + int64(i),
+			// Retry wait
+			select {
+			case <-time.After(time.Second):
+			case <-c.ctx.Done():
+				c.failAllRequests(requests, c.ctx.Err())
+				return
+			}
 		}
-		req.done <- ts
-		close(req.done)
-		close(req.errChan)
+
+		// Get the current client
+		c.connMu.RLock()
+		client := c.client
+		c.connMu.RUnlock()
+
+		stream, err := client.GetTimestamp(c.ctx)
+		if err != nil {
+			lastErr = err
+			if shouldRetry(err) {
+				continue
+			}
+			c.failAllRequests(requests, err)
+			return
+		}
+		defer stream.CloseSend()
+
+		// Send batch request
+		if err := stream.Send(&proto.GetTimestampRequest{
+			Count: uint32(len(requests)),
+		}); err != nil {
+			lastErr = err
+			if shouldRetry(err) {
+				continue
+			}
+			c.failAllRequests(requests, err)
+			return
+		}
+
+		// Receive response
+		resp, err := stream.Recv()
+		if err != nil {
+			lastErr = err
+			if shouldRetry(err) {
+				continue
+			}
+			c.failAllRequests(requests, err)
+			return
+		}
+
+		// Successfully received response, distribute results
+		baseTimestamp := resp.Timestamp
+		for i, req := range requests {
+			ts := &proto.Timestamp{
+				Physical: baseTimestamp.Physical,
+				Logical:  baseTimestamp.Logical + int64(i),
+			}
+			req.done <- ts
+			close(req.done)
+			close(req.errChan)
+		}
+		return
 	}
+
+	c.failAllRequests(requests, fmt.Errorf("max retries reached, last error: %v", lastErr))
 }
 
 // failAllRequests handles batch errors
@@ -180,8 +239,82 @@ func (c *TSOClient) failAllRequests(requests []*timestampRequest, err error) {
 	}
 }
 
+// switchToNextEndpoint switches to the next available endpoint
+func (c *TSOClient) switchToNextEndpoint() error {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	// Close existing connection
+	if c.conn != nil {
+		c.conn.Close()
+	}
+
+	// Try all endpoints
+	startIndex := c.current
+	for i := 0; i < len(c.endpoints); i++ {
+		c.current = (startIndex + i) % len(c.endpoints)
+		endpoint := c.endpoints[c.current]
+
+		// Set connection timeout
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+		conn, err := grpc.DialContext(ctx, endpoint,
+			grpc.WithInsecure(), // Add other options as needed
+			grpc.WithBlock())
+		cancel()
+
+		if err == nil {
+			c.conn = conn
+			c.client = proto.NewTSOClient(conn)
+			return nil
+		}
+	}
+
+	return errors.New("failed to connect to any endpoint")
+}
+
 // Close closes the client
 func (c *TSOClient) Close() {
 	c.cancel()
+	c.connMu.Lock()
+	if c.conn != nil {
+		c.conn.Close()
+	}
+	c.connMu.Unlock()
 	c.wg.Wait()
+}
+
+// shouldRetry determines whether the request should be retried
+func shouldRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check if it is a gRPC error
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+
+	// Determine whether to retry based on the error code
+	switch st.Code() {
+	case codes.Unavailable, // Service unavailable
+		codes.DeadlineExceeded, // Request timeout
+		codes.Aborted,          // Operation aborted
+		codes.Internal,         // Internal error
+		codes.Unknown:          // Unknown error
+		return true
+	}
+
+	// Check if the error message contains specific keywords
+	errMsg := st.Message()
+	switch {
+	case strings.Contains(errMsg, "connection refused"),
+		strings.Contains(errMsg, "no connection"),
+		strings.Contains(errMsg, "transport failure"),
+		strings.Contains(errMsg, "logical clock overflow"),
+		strings.Contains(errMsg, "connection closed"):
+		return true
+	}
+
+	return false
 }

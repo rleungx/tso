@@ -31,4 +31,13 @@ install:
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
-.PHONY: all build tidy generate clean install
+# Add test targets
+test:
+	go test -v -timeout 30s ./...
+
+test-coverage:
+	go test -v -timeout 30s -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+
+# Update PHONY targets
+.PHONY: all build tidy generate clean install test test-coverage

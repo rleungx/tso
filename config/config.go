@@ -27,15 +27,12 @@ func LoadConfig(v *viper.Viper) (*Config, error) {
 
 	defaultLogger := logger.DefaultOptions()
 	v.SetDefault("logger", map[string]interface{}{
-		"level":             defaultLogger.Level,
-		"max-size":          defaultLogger.MaxSize,
-		"max-backups":       defaultLogger.MaxBackups,
-		"max-age":           defaultLogger.MaxAge,
-		"compress":          defaultLogger.Compress,
-		"development":       defaultLogger.Development,
-		"enable-console":    defaultLogger.EnableConsole,
-		"enable-caller":     defaultLogger.EnableCaller,
-		"enable-stacktrace": defaultLogger.EnableStacktrace,
+		"level":          defaultLogger.Level,
+		"max-size":       defaultLogger.MaxSize,
+		"max-backups":    defaultLogger.MaxBackups,
+		"max-age":        defaultLogger.MaxAge,
+		"compress":       defaultLogger.Compress,
+		"enable-console": defaultLogger.EnableConsole,
 	})
 
 	v.SetConfigName("config")   // Configuration file name (without extension)

@@ -21,6 +21,8 @@ var (
 	maxLogical = int64(1 << 18)
 )
 
+var ErrLogicalOverflow = errors.New("logical clock overflow")
+
 // TimestampOracle
 type TimestampOracle struct {
 	sync.RWMutex
@@ -73,6 +75,12 @@ func (t *TimestampOracle) GenerateTimestamp(ctx context.Context, count uint32) (
 	if t.physical == ZeroTime {
 		return 0, 0, errors.New("timestamp oracle not initialized")
 	}
+
+	// Check if it will exceed the maximum value
+	if t.logical+int64(count) >= maxLogical {
+		return 0, 0, ErrLogicalOverflow
+	}
+
 	physical = t.physical.UnixNano() / int64(time.Millisecond)
 	t.logical += int64(count)
 	logical = t.logical

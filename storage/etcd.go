@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -9,11 +10,18 @@ import (
 
 // EtcdClient implements the Storage interface
 type EtcdClient struct {
-	Client *clientv3.Client // etcdClient as a struct field
+	Client *clientv3.Client
 }
 
 // NewEtcdClient creates a new EtcdClient instance
 func NewEtcdClient(endpoints []string, timeout time.Duration) (Storage, error) {
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("endpoints cannot be empty")
+	}
+	if timeout <= 0 {
+		return nil, fmt.Errorf("timeout must be positive")
+	}
+
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: timeout,
@@ -28,30 +36,43 @@ func NewEtcdClient(endpoints []string, timeout time.Duration) (Storage, error) {
 // Close closes the etcd client
 func (s *EtcdClient) Close() error {
 	if s.Client != nil {
-		err := s.Client.Close() // close the etcd client
-		if err != nil {
-			return err
-		}
-		s.Client = nil // clear the client reference
+		err := s.Client.Close()
+		s.Client = nil
+		return err
 	}
 	return nil
 }
 
 // LoadTimestamp gets the timestamp
 func (s *EtcdClient) LoadTimestamp() (time.Time, error) {
-	resp, err := s.Client.Get(context.Background(), "lastTimestamp") // use the struct field
+	if s.Client == nil {
+		return time.Time{}, fmt.Errorf("client is closed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := s.Client.Get(ctx, "lastTimestamp")
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	if len(resp.Kvs) > 0 {
-		return time.Parse(time.RFC3339, string(resp.Kvs[0].Value))
+	if len(resp.Kvs) == 0 {
+		return time.Time{}, nil
 	}
-	return time.Time{}, nil
+
+	return time.Parse(time.RFC3339, string(resp.Kvs[0].Value))
 }
 
 // SaveTimestamp saves the timestamp
 func (s *EtcdClient) SaveTimestamp(ts time.Time) error {
-	_, err := s.Client.Put(context.Background(), "lastTimestamp", ts.Format(time.RFC3339))
+	if s.Client == nil {
+		return fmt.Errorf("client is closed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := s.Client.Put(ctx, "lastTimestamp", ts.UTC().Format(time.RFC3339))
 	return err
 }
