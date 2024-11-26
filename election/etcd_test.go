@@ -3,7 +3,7 @@ package election
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -55,7 +55,7 @@ func newEmbedEtcd(t *testing.T) (*embed.Etcd, string, int) {
 }
 
 func newTestClient(t *testing.T, clientURL string) *clientv3.Client {
-	grpclog.SetLoggerV2(grpclog.NewLoggerV2(ioutil.Discard, ioutil.Discard, ioutil.Discard))
+	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, io.Discard))
 
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{fmt.Sprintf("http://%s", clientURL)},

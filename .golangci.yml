@@ -1,0 +1,10 @@
+linters:
+  disable:
+    - errcheck
+run:
+  timeout: 5m
+  go: '1.23'
+  concurrency: 4
+severity:
+  default-severity: error
+  case-sensitive: true

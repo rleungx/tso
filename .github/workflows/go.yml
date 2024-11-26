@@ -22,13 +22,41 @@ jobs:
         with:
           go-version: '1.23'
 
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
       - name: Install dependencies
-        run: go mod download
+        run: make install
+
+      - name: Generate proto files
+        run: |
+          make generate
+          make tidy
 
       - name: Run tests
-        run: go test -coverprofile=coverage.txt
+        run: make test-coverage
 
       - name: Upload results to Codecov
         uses: codecov/codecov-action@v4
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          file: coverage.out
+
+      - name: Build
+        run: make build
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tso-server
+          path: bin/tso-server
