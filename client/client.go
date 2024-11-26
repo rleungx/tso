@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -257,8 +258,9 @@ func (c *TSOClient) switchToNextEndpoint() error {
 
 		// Set connection timeout
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+		// nolint:staticcheck
 		conn, err := grpc.DialContext(ctx, endpoint,
-			grpc.WithInsecure(), // Add other options as needed
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithBlock())
 		cancel()
 
