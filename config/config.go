@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+
 	"github.com/rleungx/tso/logger"
 	"github.com/spf13/viper"
 )
@@ -21,9 +23,11 @@ func LoadConfig(v *viper.Viper) (*Config, error) {
 	if v == nil {
 		v = viper.New()
 	}
-	// Set default values for viper
+
+	// Set default values
 	v.SetDefault("host", "127.0.0.1")
-	v.SetDefault("port", "7788")
+	v.SetDefault("port", 7788)
+	v.SetDefault("backend", "etcd")
 
 	defaultLogger := logger.DefaultOptions()
 	v.SetDefault("logger", map[string]interface{}{
@@ -35,22 +39,36 @@ func LoadConfig(v *viper.Viper) (*Config, error) {
 		"enable-console": defaultLogger.EnableConsole,
 	})
 
-	v.SetConfigName("config")   // Configuration file name (without extension)
-	v.SetConfigType("toml")     // Configuration file type
-	v.AddConfigPath(".")        // Configuration file path
-	v.AddConfigPath("./config") // Configuration file path
 	// Read configuration file
 	if err := v.ReadInConfig(); err != nil {
-		return nil, err
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, err
+		}
 	}
-	// Read from environment variables (higher priority)
-	v.AutomaticEnv()
 
 	var config Config
-	// Unmarshal configuration
 	if err := v.Unmarshal(&config); err != nil {
 		return nil, err
 	}
 
+	// Validate configuration
+	if err := validateConfig(&config); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %v", err)
+	}
+
 	return &config, nil
+}
+
+// validateConfig validates the configuration
+func validateConfig(config *Config) error {
+	if config.Host == "" {
+		return fmt.Errorf("host cannot be empty")
+	}
+	if config.Port <= 0 {
+		return fmt.Errorf("port must be greater than 0")
+	}
+	if config.Backend == "" {
+		return fmt.Errorf("backend cannot be empty")
+	}
+	return nil
 }

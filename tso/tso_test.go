@@ -99,10 +99,9 @@ func TestTimestampOracle(t *testing.T) {
 				require.NoError(t, err, "Failed to sync timestamp")
 
 				// Test normal allocation
-				physical, logical, err := tso.GenerateTimestamp(ctx, 5)
+				_, logical, err := tso.GenerateTimestamp(ctx, 5)
 				require.NoError(t, err, "Failed to generate timestamp")
 				require.LessOrEqual(t, logical, maxLogical, "Logical clock exceeded maximum value")
-				t.Logf("Normal allocation: physical=%d, logical=%d", physical, logical)
 
 				// Test allocation exceeding maximum value
 				_, _, err = tso.GenerateTimestamp(ctx, 10)

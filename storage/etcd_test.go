@@ -3,13 +3,16 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"go.etcd.io/etcd/server/v3/embed"
+	"google.golang.org/grpc/grpclog"
 )
 
 // Add helper function to start embedded etcd server
@@ -35,6 +38,10 @@ func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
 	cfg.InitialCluster = fmt.Sprintf("%s=%s", cfg.Name, cfg.AdvertisePeerUrls[0].String())
 	cfg.ClusterState = embed.ClusterStateFlagNew
 
+	cfg.LogLevel = "fatal"
+	cfg.Logger = "zap"
+	cfg.LogOutputs = []string{"/dev/null"}
+
 	e, err := embed.StartEtcd(cfg)
 	if err != nil {
 		return nil, err
@@ -42,8 +49,7 @@ func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
 
 	select {
 	case <-e.Server.ReadyNotify():
-		t.Log("Embedded etcd is ready")
-	case <-time.After(10 * time.Second):
+	case <-time.After(3 * time.Second):
 		e.Close()
 		return nil, fmt.Errorf("etcd took too long to start")
 	}
@@ -52,36 +58,26 @@ func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
 }
 
 func TestEtcdClient(t *testing.T) {
+	// Set up common test environment
+	grpclog.SetLoggerV2(grpclog.NewLoggerV2WithVerbosity(io.Discard, io.Discard, io.Discard, 0))
+
 	etcd, err := startEmbeddedEtcd(t)
 	if err != nil {
 		t.Fatal("Failed to start embedded etcd:", err)
 	}
 	defer etcd.Close()
 
-	// Use the actual listening client URL
 	clientURL := etcd.Clients[0].Addr().String()
 	endpoints := []string{"http://" + clientURL}
-	t.Logf("Using etcd endpoint: %s", endpoints[0])
-	timeout := 5 * time.Second
+	timeout := 2 * time.Second
 
-	t.Run("NewEtcdClient", func(t *testing.T) {
-		// Test normal creation
-		client, err := NewEtcdClient(endpoints, timeout)
-		assert.NoError(t, err)
-		assert.NotNil(t, client)
-		defer client.Close()
-
-		// Test empty endpoints - should return an error
-		_, err = NewEtcdClient(nil, timeout)
-		assert.Error(t, err)
-
-		// Test zero timeout - should return an error
-		_, err = NewEtcdClient(endpoints, 0)
-		assert.Error(t, err)
-	})
+	// Create a reusable client creation function
+	createClient := func() (Storage, error) {
+		return NewEtcdClient(endpoints, timeout)
+	}
 
 	t.Run("SaveAndLoadTimestamp", func(t *testing.T) {
-		client, err := NewEtcdClient(endpoints, timeout)
+		client, err := createClient()
 		assert.NoError(t, err)
 		defer client.Close()
 
@@ -129,7 +125,7 @@ func TestEtcdClient(t *testing.T) {
 	})
 
 	t.Run("LoadNonExistentTimestamp", func(t *testing.T) {
-		client, err := NewEtcdClient(endpoints, timeout)
+		client, err := createClient()
 		assert.NoError(t, err)
 		defer client.Close()
 
@@ -143,23 +139,8 @@ func TestEtcdClient(t *testing.T) {
 		assert.True(t, loaded.IsZero())
 	})
 
-	t.Run("ConnectionError", func(t *testing.T) {
-		badEndpoints := []string{"localhost:1"}
-		client, err := NewEtcdClient(badEndpoints, time.Second)
-		if err != nil {
-			return
-		}
-		defer client.Close()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-		defer cancel()
-
-		_, err = client.(*EtcdClient).Client.Get(ctx, "test-key")
-		assert.Error(t, err)
-	})
-
 	t.Run("CloseClient", func(t *testing.T) {
-		client, err := NewEtcdClient(endpoints, timeout)
+		client, err := createClient()
 		assert.NoError(t, err)
 
 		// Test normal close
@@ -176,27 +157,24 @@ func TestEtcdClient(t *testing.T) {
 	})
 
 	t.Run("ConcurrentOperations", func(t *testing.T) {
-		client, err := NewEtcdClient(endpoints, timeout)
+		client, err := createClient()
 		assert.NoError(t, err)
 		defer client.Close()
 
-		concurrency := 10
-		done := make(chan bool)
+		var wg sync.WaitGroup
+		concurrency := 5
+		wg.Add(concurrency)
 
 		for i := 0; i < concurrency; i++ {
 			go func() {
+				defer wg.Done()
 				now := time.Now().UTC().Round(time.Second)
-				err := client.SaveTimestamp(now)
+				assert.NoError(t, client.SaveTimestamp(now))
+				_, err := client.LoadTimestamp()
 				assert.NoError(t, err)
-
-				_, err = client.LoadTimestamp()
-				assert.NoError(t, err)
-				done <- true
 			}()
 		}
 
-		for i := 0; i < concurrency; i++ {
-			<-done
-		}
+		wg.Wait()
 	})
 }

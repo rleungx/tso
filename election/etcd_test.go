@@ -3,6 +3,7 @@ package election
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
+	"google.golang.org/grpc/grpclog"
 )
 
 func newEmbedEtcd(t *testing.T) (*embed.Etcd, string, int) {
@@ -21,6 +23,9 @@ func newEmbedEtcd(t *testing.T) (*embed.Etcd, string, int) {
 
 	// Configure embedded etcd
 	cfg := embed.NewConfig()
+	cfg.Logger = "zap"
+	cfg.LogLevel = "error"
+	cfg.LogOutputs = []string{"/dev/null"}
 	cfg.Dir = dir
 	lcurl, _ := url.Parse("http://localhost:0")
 	cfg.ListenClientUrls = []url.URL{*lcurl}
@@ -50,6 +55,8 @@ func newEmbedEtcd(t *testing.T) (*embed.Etcd, string, int) {
 }
 
 func newTestClient(t *testing.T, clientURL string) *clientv3.Client {
+	grpclog.SetLoggerV2(grpclog.NewLoggerV2(ioutil.Discard, ioutil.Discard, ioutil.Discard))
+
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{fmt.Sprintf("http://%s", clientURL)},
 		DialTimeout: 5 * time.Second,
@@ -135,11 +142,13 @@ func TestWatch(t *testing.T) {
 
 	watchDone := make(chan struct{})
 	go func() {
-		e.Watch(ctx)
+		time.Sleep(100 * time.Millisecond)
+		cancel()
 		close(watchDone)
 	}()
 
-	cancel()
+	e.Watch(ctx)
+
 	select {
 	case <-watchDone:
 		// As expected
