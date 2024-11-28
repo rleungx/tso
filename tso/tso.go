@@ -7,12 +7,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rleungx/tso/logger"
 	"github.com/rleungx/tso/storage"
+	"go.uber.org/zap"
 )
 
 const (
 	// updateTimestampGuard is the minimum timestamp interval.
 	updateTimestampGuard = time.Millisecond
+	// tsoUpdatePhysicalInterval is the interval to update the physical part of a tso.
+	tsoUpdatePhysicalInterval = 50 * time.Millisecond
 )
 
 // ZeroTime is a zero time.
@@ -43,6 +47,29 @@ func NewTimestampOracle(ctx context.Context, storage storage.Storage) *Timestamp
 		lastSavedTime: atomic.Value{},
 	}
 	return tso
+}
+
+func (ts *TimestampOracle) UpdateTimestampLoop() error {
+	defer ts.Reset()
+	if err := ts.SyncTimestamp(ts.storage); err != nil {
+		logger.Error("failed to sync timestamp", zap.Error(err))
+		return err
+	}
+
+	ticker := time.NewTicker(tsoUpdatePhysicalInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ts.ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := ts.UpdateTimestamp(ts.storage); err != nil {
+				logger.Error("failed to update timestamp", zap.Error(err))
+				return err
+			}
+		}
+	}
 }
 
 func (ts *TimestampOracle) get() (time.Time, int64) {

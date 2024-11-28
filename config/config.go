@@ -28,6 +28,7 @@ func LoadConfig(v *viper.Viper) (*Config, error) {
 	v.SetDefault("host", "127.0.0.1")
 	v.SetDefault("port", 7788)
 	v.SetDefault("backend", "etcd")
+	v.SetDefault("backend-address", "http://127.0.0.1:2379")
 
 	defaultLogger := logger.DefaultOptions()
 	v.SetDefault("logger", map[string]interface{}{
@@ -64,11 +65,29 @@ func validateConfig(config *Config) error {
 	if config.Host == "" {
 		return fmt.Errorf("host cannot be empty")
 	}
-	if config.Port <= 0 {
-		return fmt.Errorf("port must be greater than 0")
+	if config.Port <= 0 || config.Port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
 	}
 	if config.Backend == "" {
 		return fmt.Errorf("backend cannot be empty")
 	}
+	if config.Backend != "mem" && config.BackendAddress == "" {
+		return fmt.Errorf("backend-address cannot be empty unless backend is 'mem'")
+	}
+
+	// If any certificate files are provided, all must be provided
+	certFilesProvided := config.CAFile != "" || config.CertFile != "" || config.KeyFile != ""
+	if certFilesProvided {
+		if config.CAFile == "" {
+			return fmt.Errorf("CA certificate file must be provided when using TLS")
+		}
+		if config.CertFile == "" {
+			return fmt.Errorf("certificate file must be provided when using TLS")
+		}
+		if config.KeyFile == "" {
+			return fmt.Errorf("private key file must be provided when using TLS")
+		}
+	}
+
 	return nil
 }

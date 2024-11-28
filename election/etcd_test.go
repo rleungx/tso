@@ -3,63 +3,75 @@ package election
 import (
 	"context"
 	"fmt"
-	"io"
-	"net"
 	"net/url"
 	"os"
-	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
-	"google.golang.org/grpc/grpclog"
+	"go.uber.org/zap"
 )
 
-func newEmbedEtcd(t *testing.T) (*embed.Etcd, string, int) {
-	dir, err := os.MkdirTemp("", "etcd-test-*")
-	require.NoError(t, err)
+// Add helper function to start embedded etcd server
+func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
+	tmpDir, err := os.MkdirTemp("", "tso-test-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
-	// Configure embedded etcd
 	cfg := embed.NewConfig()
-	cfg.Logger = "zap"
-	cfg.LogLevel = "error"
-	cfg.LogOutputs = []string{"/dev/null"}
-	cfg.Dir = dir
+	cfg.Dir = tmpDir
+
+	// Configure client URL
 	lcurl, _ := url.Parse("http://localhost:0")
 	cfg.ListenClientUrls = []url.URL{*lcurl}
 	cfg.AdvertiseClientUrls = []url.URL{*lcurl}
-	lpurl, _ := url.Parse("http://localhost:0")
-	cfg.ListenPeerUrls = []url.URL{*lpurl}
-	cfg.AdvertisePeerUrls = []url.URL{*lpurl}
-	cfg.InitialCluster = fmt.Sprintf("%s=%s", cfg.Name, lpurl)
 
-	// Start embedded etcd
+	// Configure peer URL
+	pcurl, _ := url.Parse("http://localhost:0")
+	cfg.ListenPeerUrls = []url.URL{*pcurl}
+	cfg.AdvertisePeerUrls = []url.URL{*pcurl}
+	cfg.InitialCluster = fmt.Sprintf("%s=%s", cfg.Name, cfg.AdvertisePeerUrls[0].String())
+	cfg.ClusterState = embed.ClusterStateFlagNew
+
+	cfg.LogLevel = "fatal"
+	cfg.Logger = "zap"
+	cfg.LogOutputs = []string{"/dev/null"}
+
 	e, err := embed.StartEtcd(cfg)
-	require.NoError(t, err)
+	if err != nil {
+		return nil, err
+	}
 
 	select {
 	case <-e.Server.ReadyNotify():
-		// etcd server is ready
-	case <-time.After(3 * time.Second):
+		time.Sleep(100 * time.Millisecond)
+	case <-time.After(5 * time.Second):
 		e.Close()
-		t.Fatal("etcd server took too long to start")
+		return nil, fmt.Errorf("etcd took too long to start")
 	}
 
-	clientURL := e.Clients[0].Addr().String()
-	_, portStr, _ := net.SplitHostPort(clientURL)
-	clientPort, _ := strconv.Atoi(portStr)
-
-	return e, clientURL, clientPort
+	return e, nil
 }
 
 func newTestClient(t *testing.T, clientURL string) *clientv3.Client {
-	grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, io.Discard))
+	u, err := url.Parse(clientURL)
+	require.NoError(t, err)
+
+	// Create a zap logger that disables all output
+	lg := zap.NewNop()
 
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{fmt.Sprintf("http://%s", clientURL)},
-		DialTimeout: 5 * time.Second,
+		Endpoints:            []string{u.Host},
+		DialTimeout:          2 * time.Second,
+		DialKeepAliveTime:    1 * time.Second,
+		DialKeepAliveTimeout: 500 * time.Millisecond,
+		AutoSyncInterval:     0,
+		Logger:               lg, // Use nop logger
 	})
 	require.NoError(t, err)
 
@@ -76,134 +88,162 @@ func newTestClient(t *testing.T, clientURL string) *clientv3.Client {
 }
 
 func TestCampaign(t *testing.T) {
-	etcd, clientURL, _ := newEmbedEtcd(t)
-	defer func() {
-		etcd.Close()
-		os.RemoveAll(etcd.Config().Dir)
-	}()
+	etcd, err := startEmbeddedEtcd(t)
+	require.NoError(t, err)
+	defer etcd.Close()
 
+	clientURL := fmt.Sprintf("http://%s", etcd.Clients[0].Addr().String())
 	cli := newTestClient(t, clientURL)
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_, err := cli.Delete(ctx, defaultElectionPrefix, clientv3.WithPrefix())
 		require.NoError(t, err)
 		cli.Close()
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	e1, err := newEtcdElection(ctx, cli)
+	// Create the first node, it will automatically become the leader
+	leaderSelected := make(chan struct{})
+	var leaderOnce sync.Once
+	e1, err := newEtcdElection(ctx, cli, func() error {
+		leaderOnce.Do(func() {
+			close(leaderSelected)
+		})
+		return nil
+	})
 	require.NoError(t, err)
-	defer func() {
-		err := e1.Close()
-		require.NoError(t, err)
-	}()
+	defer e1.Close()
 
-	// Test the first node successfully campaigns
-	err = e1.Campaign(ctx)
-	require.NoError(t, err)
-
-	// Test the second node cannot become the leader
-	e2, err := newEtcdElection(ctx, cli)
-	require.NoError(t, err)
-	defer func() {
-		err := e2.Close()
-		require.NoError(t, err)
-	}()
-
-	// Use a shorter timeout
-	ctxTimeout, cancel := context.WithTimeout(ctx, 1*time.Second)
-	defer cancel()
-
-	// Try to let the second node campaign
-	err = e2.Campaign(ctxTimeout)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "context deadline exceeded")
-}
-
-func TestWatch(t *testing.T) {
-	etcd, clientURL, _ := newEmbedEtcd(t)
-	defer func() {
-		etcd.Close()
-		os.RemoveAll(etcd.Config().Dir)
-	}()
-
-	cli := newTestClient(t, clientURL)
-	defer cli.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	e, err := newEtcdElection(ctx, cli)
-	require.NoError(t, err)
-	defer e.Close()
-
-	watchDone := make(chan struct{})
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-		close(watchDone)
-	}()
-
-	e.Watch(ctx)
-
+	// Wait for the first node to become the leader
 	select {
-	case <-watchDone:
-		// As expected
-	case <-time.After(2 * time.Second):
-		t.Fatal("Watch should exit after context cancel")
+	case <-leaderSelected:
+		// The first node successfully became the leader
+	case <-time.After(time.Second):
+		t.Fatal("first node failed to become leader in time")
+	}
+
+	// Create the second node, it should not become the leader
+	secondNodeTried := make(chan struct{})
+	var secondOnce sync.Once
+	e2, err := newEtcdElection(ctx, cli, func() error {
+		secondOnce.Do(func() {
+			close(secondNodeTried)
+		})
+		return nil
+	})
+	require.NoError(t, err)
+	defer e2.Close()
+
+	// Verify that the second node did not become the leader in a short time
+	select {
+	case <-secondNodeTried:
+		t.Fatal("second node shouldn't become leader while first node is active")
+	case <-time.After(500 * time.Millisecond):
+		// As expected, the second node did not become the leader
 	}
 }
 
 func TestResign(t *testing.T) {
-	etcd, clientURL, _ := newEmbedEtcd(t)
-	defer func() {
-		etcd.Close()
-		os.RemoveAll(etcd.Config().Dir)
-	}()
+	etcd, err := startEmbeddedEtcd(t)
+	require.NoError(t, err)
+	defer etcd.Close()
+
+	clientURL := fmt.Sprintf("http://%s", etcd.Clients[0].Addr().String())
 
 	cli := newTestClient(t, clientURL)
 	defer cli.Close()
 
-	ctx := context.Background()
-	election1, err := newEtcdElection(ctx, cli)
-	require.NoError(t, err)
-	defer election1.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	// First become the leader
-	err = election1.Campaign(ctx)
+	// Create the first node and wait for it to become the leader
+	leaderSelected := make(chan struct{})
+	var leaderOnce sync.Once
+	e1, err := newEtcdElection(ctx, cli, func() error {
+		leaderOnce.Do(func() {
+			close(leaderSelected)
+		})
+		return nil
+	})
 	require.NoError(t, err)
+	defer e1.Close()
 
-	// Test resigning leadership
-	err = election1.Resign()
-	require.NoError(t, err)
+	// Wait for the first node to become the leader
+	select {
+	case <-leaderSelected:
+		// Successfully became the leader
+	case <-time.After(time.Second):
+		t.Fatal("first node failed to become leader in time")
+	}
 
-	// Verify other nodes can become the leader
-	election2, err := newEtcdElection(ctx, cli)
+	// Create the second node
+	secondNodeSelected := make(chan struct{})
+	var secondOnce sync.Once
+	e2, err := newEtcdElection(ctx, cli, func() error {
+		secondOnce.Do(func() {
+			close(secondNodeSelected)
+		})
+		return nil
+	})
 	require.NoError(t, err)
-	defer election2.Close()
+	defer e2.Close()
 
-	err = election2.Campaign(ctx)
-	require.NoError(t, err)
+	// Keep trying to resign until e2 successfully becomes the leader
+	for i := 0; i < 10; i++ {
+		err = e1.Resign()
+		require.NoError(t, err)
+
+		// Check if e2 became the leader
+		select {
+		case <-secondNodeSelected:
+			return // Test succeeded
+		case <-time.After(200 * time.Millisecond):
+			continue // Keep trying
+		}
+	}
+	t.Fatal("second node failed to become leader after multiple resign attempts")
 }
 
 func TestClose(t *testing.T) {
-	etcd, clientURL, _ := newEmbedEtcd(t)
-	defer func() {
-		etcd.Close()
-		os.RemoveAll(etcd.Config().Dir)
-	}()
+	etcd, err := startEmbeddedEtcd(t)
+	require.NoError(t, err)
+	defer etcd.Close()
 
+	clientURL := fmt.Sprintf("http://%s", etcd.Clients[0].Addr().String())
 	cli := newTestClient(t, clientURL)
 	defer cli.Close()
 
 	ctx := context.Background()
-	election, err := newEtcdElection(ctx, cli)
+
+	// Create a node and wait for it to become the leader
+	leaderSelected := make(chan struct{})
+	var leaderOnce sync.Once
+	election, err := newEtcdElection(ctx, cli, func() error {
+		leaderOnce.Do(func() {
+			close(leaderSelected)
+		})
+		return nil
+	})
 	require.NoError(t, err)
 
-	// Test closing
+	// Wait for the node to become the leader
+	select {
+	case <-leaderSelected:
+		// Successfully became the leader
+	case <-time.After(time.Second):
+		t.Fatal("node failed to become leader in time")
+	}
+
+	// Test close
 	err = election.Close()
 	require.NoError(t, err)
+
+	// Verify that it cannot participate in the election after closing
+	ctxTimeout, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	err = election.Campaign(ctxTimeout)
+	require.Error(t, err)
 }

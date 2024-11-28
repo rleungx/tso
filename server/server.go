@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,34 +25,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// tsoUpdatePhysicalInterval is the interval to update the physical part of a tso.
-var tsoUpdatePhysicalInterval = 50 * time.Millisecond
-
-// ServiceRole represents the service role
-type ServiceRole int32
-
-const (
-	// RoleStandby indicates standby status, not providing service
-	RoleStandby ServiceRole = iota
-	// RoleActive indicates active status, providing service
-	RoleActive
-)
-
-func (r ServiceRole) String() string {
-	switch r {
-	case RoleStandby:
-		return "Standby"
-	case RoleActive:
-		return "Active"
-	default:
-		return "Unknown"
-	}
-}
-
-func (s *Server) IsActive() bool {
-	return ServiceRole(s.role.Load()) == RoleActive
-}
-
 type Server struct {
 	mu     sync.RWMutex
 	ctx    context.Context
@@ -65,7 +36,8 @@ type Server struct {
 	storage         storage.Storage
 	timestampOracle *tso.TimestampOracle
 	election        election.Election
-	role            atomic.Int32
+	grpcServer      *grpc.Server
+	httpServer      *http.Server
 }
 
 // NewServer creates a new server instance
@@ -89,13 +61,13 @@ func (s *Server) Start() error {
 		return err
 	}
 
+	s.timestampOracle = tso.NewTimestampOracle(s.ctx, s.storage)
+
 	// Initialize election
-	s.election, err = election.NewElection(s.ctx, s.storage)
+	s.election, err = election.NewElection(s.ctx, s.storage, s.timestampOracle.UpdateTimestampLoop)
 	if err != nil {
 		return err
 	}
-
-	go s.electionLoop()
 
 	// Create a listener
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.config.Host, s.config.Port))
@@ -110,39 +82,37 @@ func (s *Server) Start() error {
 	tlsEnabled := s.config.CertFile != "" && s.config.KeyFile != ""
 
 	// Create gRPC server
-	var grpcServer *grpc.Server
 	if tlsEnabled {
 		cert, err := loadTLSCredentials(s.config.CertFile, s.config.KeyFile)
 		if err != nil {
 			return err
 		}
-		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
+		s.grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{
 			Certificates: []tls.Certificate{cert}, // Use your certificate
 		})))
 	} else {
-		grpcServer = grpc.NewServer() // Do not use TLS
+		s.grpcServer = grpc.NewServer() // Do not use TLS
 	}
 	// Register your gRPC service here
-	proto.RegisterTSOServer(grpcServer, s)
+	proto.RegisterTSOServer(s.grpcServer, s)
 	// Create matchers for gRPC and HTTP
 	grpcL := m.MatchWithWriters(cmux.HTTP2MatchHeaderFieldSendSettings("content-type", "application/grpc"))
 	httpL := m.Match(cmux.HTTP1Fast())
 
 	// Start gRPC server
 	go func() {
-		if err := grpcServer.Serve(grpcL); err != nil {
+		if err := s.grpcServer.Serve(grpcL); err != nil {
 			logger.Error("gRPC server failed", zap.Error(err))
 		}
 	}()
 
 	// Start HTTP server
-	var httpServer *http.Server
 	if tlsEnabled { // Check if TLS is enabled
 		cert, err := loadTLSCredentials(s.config.CertFile, s.config.KeyFile)
 		if err != nil {
 			return err
 		}
-		httpServer = &http.Server{
+		s.httpServer = &http.Server{
 			Addr: fmt.Sprintf("%s:%d", s.config.Host, s.config.Port), // Use the same port
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{cert}, // Use your certificate
@@ -150,17 +120,17 @@ func (s *Server) Start() error {
 			Handler: s.setupRoutes(), // Set routes
 		}
 		go func() {
-			if err := httpServer.ServeTLS(httpL, s.config.CertFile, s.config.KeyFile); err != nil {
+			if err := s.httpServer.ServeTLS(httpL, s.config.CertFile, s.config.KeyFile); err != nil {
 				logger.Error("HTTP server failed", zap.Error(err))
 			}
 		}()
 	} else {
-		httpServer = &http.Server{
+		s.httpServer = &http.Server{
 			Addr:    fmt.Sprintf("%s:%d", s.config.Host, s.config.Port), // Use the same port
 			Handler: s.setupRoutes(),                                    // Set routes
 		}
 		go func() {
-			if err := httpServer.Serve(httpL); err != nil {
+			if err := s.httpServer.Serve(httpL); err != nil {
 				logger.Error("HTTP server failed", zap.Error(err))
 			}
 		}()
@@ -171,10 +141,41 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() error {
-	if err := s.storage.Close(); err != nil {
-		return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 1. Cancel context, notify all services to start the shutdown process
+	// This will trigger all goroutines listening to the context to start exiting
+	if s.cancel != nil {
+		s.cancel()
 	}
-	s.cancel()
+
+	// 2. Stop external services, no longer accept new requests
+	// Need to wait for existing requests to be processed before continuing the shutdown process
+	if s.grpcServer != nil {
+		s.grpcServer.GracefulStop()
+	}
+
+	if s.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.httpServer.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+
+	// 3. Stop the election service
+	// This will cause the current node to exit the leader state, and the TSO service will also stop serving due to losing the leader
+	if s.election != nil {
+		s.election.Close()
+	}
+
+	// 4. Finally close the etcd client
+	// At this point, all services that depend on etcd have stopped, and the client connection can be safely closed
+	if s.storage != nil {
+		s.storage.Close()
+	}
+
 	return nil
 }
 
@@ -197,7 +198,7 @@ func loadTLSCredentials(certFile, keyFile string) (tls.Certificate, error) {
 
 // GetTimestamp implements the GetTimestamp method of the TSO service
 func (s *Server) GetTimestamp(reqStream proto.TSO_GetTimestampServer) error {
-	if !s.IsActive() {
+	if !s.election.IsActive() {
 		return status.Error(codes.Unavailable, "server is not active")
 	}
 
@@ -260,91 +261,5 @@ func (s *Server) GetTimestamp(reqStream proto.TSO_GetTimestampServer) error {
 			return status.Error(codes.Internal, "failed to send response")
 		}
 	}
-	return nil
-}
-
-func (s *Server) electionLoop() {
-	for {
-		select {
-		case <-s.ctx.Done():
-			logger.Info("election loop context done, exiting")
-			return
-		default:
-			logger.Info("starting election campaign")
-			// Try to become the active node first
-			err := s.election.Campaign(s.ctx)
-			if err != nil {
-				logger.Error("failed to campaign for election", zap.Error(err))
-				s.becomeStandby()
-				logger.Info("watching for election changes")
-				s.election.Watch(s.ctx)
-				continue
-			}
-
-			s.becomeActive()
-			// If handleActiveState returns, it means re-election is needed
-			logger.Info("exited active state, will retry election")
-		}
-	}
-}
-
-func (s *Server) becomeActive() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if ServiceRole(s.role.Load()) == RoleActive {
-		return nil
-	}
-
-	logger.Info("becoming active node")
-
-	// 1. Initialize TimestampOracle
-	if s.timestampOracle == nil {
-		s.timestampOracle = tso.NewTimestampOracle(s.ctx, s.storage)
-	}
-
-	// 2. Sync timestamp
-	if err := s.timestampOracle.SyncTimestamp(s.storage); err != nil {
-		logger.Error("failed to sync timestamp", zap.Error(err))
-		if resignErr := s.election.Resign(); resignErr != nil {
-			logger.Error("failed to resign from election", zap.Error(resignErr))
-		}
-		return err
-	}
-	defer s.timestampOracle.Reset()
-	// 4. Update role
-	s.role.Store(int32(RoleActive))
-	logger.Info("became active node")
-	defer s.role.Store(int32(RoleStandby))
-	ticker := time.NewTicker(tsoUpdatePhysicalInterval)
-	defer ticker.Stop()
-
-	// 3. Start timestamp update
-	for {
-		select {
-		case <-s.ctx.Done():
-			return nil
-		case <-ticker.C:
-			if err := s.timestampOracle.UpdateTimestamp(s.storage); err != nil {
-				logger.Error("failed to update timestamp", zap.Error(err))
-				if resignErr := s.election.Resign(); resignErr != nil {
-					logger.Error("failed to resign from election after update failure", zap.Error(resignErr))
-				}
-			}
-		}
-	}
-}
-
-func (s *Server) becomeStandby() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if ServiceRole(s.role.Load()) == RoleStandby {
-		return nil
-	}
-
-	// 2. Update role
-	s.role.Store(int32(RoleStandby))
-	logger.Info("became standby node")
 	return nil
 }

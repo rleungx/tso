@@ -10,10 +10,8 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-var (
-	// L is the global logger instance
-	L *zap.Logger
-)
+// L is the global logger instance
+var L *zap.Logger
 
 // Options simplified configuration options
 type Options struct {

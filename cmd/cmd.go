@@ -18,22 +18,26 @@ func Execute() {
 	v := viper.New()
 
 	// Create root command
-	var rootCmd = &cobra.Command{
+	rootCmd := &cobra.Command{
 		Use:   "tso-server",
 		Short: "Start the timestamp server",
 		Run: func(cmd *cobra.Command, args []string) {
 			if err := v.BindPFlags(cmd.Flags()); err != nil {
 				cmd.PrintErr("Failed to bind flags", zap.Error(err))
+				os.Exit(0)
 			}
 			cfg, err := config.LoadConfig(v) // Load configuration from file and command line
 			if err != nil {
 				cmd.PrintErr("Failed to load configuration", zap.Error(err))
+				os.Exit(0)
 			}
 			if err := logger.Init(cfg.Logger); err != nil {
 				cmd.PrintErr("Failed to initialize logger", zap.Error(err))
+				os.Exit(0)
 			}
 			defer logger.Sync()
 
+			logger.Info("Starting server", zap.Any("config", cfg))
 			srv := server.NewServer(cfg) // Create server instance, assuming NewServer is a constructor
 			sigChan := make(chan os.Signal, 1)
 			// Listen for system interrupt and terminate signals

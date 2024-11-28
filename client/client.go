@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
@@ -21,6 +23,7 @@ type TSOClient struct {
 	requests  chan *timestampRequest
 	batchSize uint32
 	maxWait   time.Duration
+	grpcOpts  []grpc.DialOption
 	wg        sync.WaitGroup
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -28,6 +31,7 @@ type TSOClient struct {
 	current   int              // Current server index
 	connMu    sync.RWMutex     // Protects connection-related fields
 	conn      *grpc.ClientConn // Current connection
+	tlsConfig *tls.Config      // TLS configuration
 }
 
 // Single timestamp request
@@ -83,6 +87,20 @@ func WithBatchSize(size uint32) Option {
 func WithMaxWait(d time.Duration) Option {
 	return func(c *TSOClient) {
 		c.maxWait = d
+	}
+}
+
+// WithGRPCDialOption sets the grpc dial options
+func WithGRPCDialOption(opts ...grpc.DialOption) Option {
+	return func(c *TSOClient) {
+		c.grpcOpts = opts
+	}
+}
+
+// WithTLSConfig sets the TLS configuration
+func WithTLSConfig(config *tls.Config) Option {
+	return func(c *TSOClient) {
+		c.tlsConfig = config
 	}
 }
 
@@ -256,12 +274,23 @@ func (c *TSOClient) switchToNextEndpoint() error {
 		c.current = (startIndex + i) % len(c.endpoints)
 		endpoint := c.endpoints[c.current]
 
+		opts := []grpc.DialOption{}
+
+		// Choose certificate based on whether TLS is configured
+		if c.tlsConfig != nil {
+			opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(c.tlsConfig)))
+		} else {
+			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		}
+
+		// nolint:staticcheck
+		opts = append(opts, grpc.WithBlock())
+		opts = append(opts, c.grpcOpts...)
+
 		// Set connection timeout
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
 		// nolint:staticcheck
-		conn, err := grpc.DialContext(ctx, endpoint,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock())
+		conn, err := grpc.DialContext(ctx, endpoint, opts...)
 		cancel()
 
 		if err == nil {

@@ -20,7 +20,7 @@ type TimestampResponse struct {
 // GetTS handles the timestamp request
 func (s *Server) GetTS(c *gin.Context) {
 	// Add active status check
-	if !s.IsActive() {
+	if !s.election.IsActive() {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "server is not active"})
 		return
 	}
