@@ -119,18 +119,25 @@ func TestTSOClusterBasic(t *testing.T) {
 
 	// Test normal timestamp retrieval
 	t.Run("NormalOperation", func(t *testing.T) {
-		var lastTS *proto.Timestamp
+		var (
+			lastTS            *proto.Timestamp
+			physical, logical int64
+		)
 		for i := 0; i < 10; i++ {
 			ts, err := cli.GetTimestamp(context.Background())
 			require.NoError(t, err)
 			require.NotNil(t, ts)
-
+			physical, logical, err = ts.Wait()
+			require.NoError(t, err)
 			if lastTS != nil {
-				currTime := ts.Physical*1e6 + ts.Logical
+				currTime := physical*1e6 + logical
 				lastTime := lastTS.Physical*1e6 + lastTS.Logical
 				require.Greater(t, currTime, lastTime, "timestamp should be monotonically increasing")
 			}
-			lastTS = ts
+			lastTS = &proto.Timestamp{
+				Physical: physical,
+				Logical:  logical,
+			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	})
@@ -148,8 +155,12 @@ func TestTSOClusterBasic(t *testing.T) {
 		ts2, err := cli.GetTimestamp(context.Background())
 		require.NoError(t, err)
 
-		time1 := ts1.Physical*1e6 + ts1.Logical
-		time2 := ts2.Physical*1e6 + ts2.Logical
+		physical1, logical1, err := ts1.Wait()
+		require.NoError(t, err)
+		physical2, logical2, err := ts2.Wait()
+		require.NoError(t, err)
+		time1 := physical1*1e6 + logical1
+		time2 := physical2*1e6 + logical2
 		require.Greater(t, time2, time1, "timestamp should be monotonically increasing after failover")
 	})
 }
@@ -183,21 +194,28 @@ func TestTSOMultiClients(t *testing.T) {
 			require.NoError(t, err)
 			defer cli.Close()
 
-			var lastTS *proto.Timestamp
+			var (
+				lastTS            *proto.Timestamp
+				physical, logical int64
+			)
 			for j := 0; j < requestsPerClient; j++ {
 				ts, err := cli.GetTimestamp(context.Background())
 				require.NoError(t, err)
-
+				physical, logical, err = ts.Wait()
+				require.NoError(t, err)
 				if lastTS != nil {
-					currTime := ts.Physical*1e6 + ts.Logical
+					currTime := physical*1e6 + logical
 					lastTime := lastTS.Physical*1e6 + lastTS.Logical
 					require.Greater(t, currTime, lastTime,
 						fmt.Sprintf("client %d: timestamp went backwards", clientID))
 				}
-				lastTS = ts
+				lastTS = &proto.Timestamp{
+					Physical: physical,
+					Logical:  logical,
+				}
 
 				// Send timestamp to channel
-				timestamps <- ts.Physical*1e6 + ts.Logical
+				timestamps <- physical*1e6 + logical
 				time.Sleep(time.Millisecond)
 			}
 		}(i)
@@ -249,17 +267,19 @@ func TestTSOStandbyServer(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		// Send request to the first node
 		ts1, err1 := cli1.GetTimestamp(context.Background())
+		physical1, logical1, err11 := ts1.Wait()
 
 		// Send request to the second node
 		ts2, err2 := cli2.GetTimestamp(context.Background())
+		physical2, logical2, err22 := ts2.Wait()
 
 		// At least one node should respond successfully
 		require.True(t, err1 == nil || err2 == nil, "at least one server should be active")
 
 		// If both succeed, timestamps should be monotonically increasing
-		if err1 == nil && err2 == nil {
-			time1 := ts1.Physical*1e6 + ts1.Logical
-			time2 := ts2.Physical*1e6 + ts2.Logical
+		if err1 == nil && err11 == nil && err2 == nil && err22 == nil {
+			time1 := physical1*1e6 + logical1
+			time2 := physical2*1e6 + logical2
 			require.NotEqual(t, time1, time2, "timestamps should be unique")
 		}
 
@@ -290,7 +310,9 @@ func TestTSOStandbyServer(t *testing.T) {
 	// Get a timestamp as a baseline
 	ts, err := leaderCli.GetTimestamp(context.Background())
 	require.NoError(t, err)
-	baseTime := ts.Physical*1e6 + ts.Logical
+	physical, logical, err := ts.Wait()
+	require.NoError(t, err)
+	baseTime := physical*1e6 + logical
 
 	// Stop the current leader
 	if cli1 == leaderCli {
@@ -305,6 +327,107 @@ func TestTSOStandbyServer(t *testing.T) {
 	// Verify the previous standby node can now serve
 	ts, err = standbyCli.GetTimestamp(context.Background())
 	require.NoError(t, err)
-	newTime := ts.Physical*1e6 + ts.Logical
+	physical, logical, err = ts.Wait()
+	require.NoError(t, err)
+	newTime := physical*1e6 + logical
 	require.Greater(t, newTime, baseTime, "timestamp should be greater after failover")
+}
+
+// Test the impact of different batch sizes
+func BenchmarkTSOBatchSize(b *testing.B) {
+	etcd, err := startEmbeddedEtcd(&testing.T{})
+	require.NoError(b, err)
+	defer etcd.Close()
+	etcdAddr := fmt.Sprintf("http://%s", etcd.Clients[0].Addr().String())
+
+	scenarios := []struct {
+		name         string
+		maxBatchSize uint32
+	}{
+		{"Batch1", 1},     // No batching
+		{"Batch8", 8},     // Small batch
+		{"Batch16", 16},   // Small batch
+		{"Batch32", 32},   // Medium batch
+		{"Batch64", 64},   // Large batch
+		{"Batch128", 128}, // Large batch
+		{"Batch256", 256}, // Very large batch
+	}
+	srv, err := startTSOServer(etcdAddr, 10001)
+	require.NoError(b, err)
+	defer srv.Stop()
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			cli, err := client.NewTSOClient(
+				[]string{"localhost:10001"},
+				client.WithMaxBatchSize(sc.maxBatchSize),
+			)
+			require.NoError(b, err)
+			defer cli.Close()
+
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					future, err := cli.GetTimestamp(context.Background())
+					if err != nil {
+						b.Fatal(err)
+					}
+					_, _, err = future.Wait()
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		})
+	}
+}
+
+// Test the impact of different wait times
+func BenchmarkTSOMaxWaitTime(b *testing.B) {
+	etcd, err := startEmbeddedEtcd(&testing.T{})
+	require.NoError(b, err)
+	defer etcd.Close()
+	etcdAddr := fmt.Sprintf("http://%s", etcd.Clients[0].Addr().String())
+
+	scenarios := []struct {
+		name        string
+		maxWaitTime time.Duration
+	}{
+		{"NoWait", 0},
+		{"Wait100us", 100 * time.Microsecond}, // Minimum wait time
+		{"Wait300us", 300 * time.Microsecond}, // Small wait time
+		{"Wait500us", 500 * time.Microsecond}, // Medium wait time
+		{"Wait1ms", 1 * time.Millisecond},     // Common wait time
+		{"Wait2ms", 2 * time.Millisecond},     // Long wait time
+		{"Wait5ms", 5 * time.Millisecond},     // Long wait time
+		{"Wait10ms", 10 * time.Millisecond},   // Maximum wait time
+	}
+	srv, err := startTSOServer(etcdAddr, 10001)
+	require.NoError(b, err)
+	defer srv.Stop()
+
+	for _, sc := range scenarios {
+		b.Run(sc.name, func(b *testing.B) {
+			cli, err := client.NewTSOClient(
+				[]string{"localhost:10001"},
+				client.WithMaxWaitTime(sc.maxWaitTime),
+			)
+			require.NoError(b, err)
+			defer cli.Close()
+
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					future, err := cli.GetTimestamp(context.Background())
+					if err != nil {
+						b.Fatal(err)
+					}
+					_, _, err = future.Wait()
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		})
+	}
 }

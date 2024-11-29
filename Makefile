@@ -14,6 +14,9 @@ all: install generate build
 build:
 	go build -o bin/tso-server main.go
 
+check: tidy
+	golangci-lint run --config=.golangci.yml --timeout=10m
+
 # Add tidy target
 tidy:
 	go mod tidy
@@ -40,4 +43,4 @@ test-coverage:
 	go tool cover -html=coverage.out -o coverage.html
 
 # Update PHONY targets
-.PHONY: all build tidy generate clean install test test-coverage
+.PHONY: all build check tidy generate clean install test test-coverage

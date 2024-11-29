@@ -17,6 +17,14 @@ type TimestampResponse struct {
 	Count     uint32     `json:"count"`
 }
 
+// setupRoutes sets up HTTP routes
+func (s *Server) setupRoutes() *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.Default()
+	router.GET("/timestamp", s.GetTS) // Register handler
+	return router
+}
+
 // GetTS handles the timestamp request
 func (s *Server) GetTS(c *gin.Context) {
 	// Add active status check

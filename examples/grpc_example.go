@@ -18,8 +18,8 @@ func main() {
 
 	// Create client, set batch size and max wait time
 	tsoClient, err := client.NewTSOClient([]string{"localhost:8080"},
-		client.WithBatchSize(100),
-		client.WithMaxWait(time.Millisecond*10),
+		client.WithMaxBatchSize(100),
+		client.WithMaxWaitTime(time.Millisecond*10),
 	)
 	if err != nil {
 		logger.Fatal("Failed to create TSO client", zap.Error(err))
@@ -35,6 +35,11 @@ func main() {
 			logger.Error("Failed to get timestamp", zap.Error(err))
 			return
 		}
-		logger.Info("Received timestamp", zap.Int64("timestamp", ts.Physical), zap.Int64("logical", ts.Logical))
+		physical, logical, err := ts.Wait()
+		if err != nil {
+			logger.Error("Failed to wait timestamp", zap.Error(err))
+			return
+		}
+		logger.Info("Received timestamp", zap.Int64("timestamp", physical), zap.Int64("logical", logical))
 	}
 }

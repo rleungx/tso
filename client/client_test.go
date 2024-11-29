@@ -82,16 +82,16 @@ func TestTSOClientOptions(t *testing.T) {
 
 	client, err := NewTSOClient(
 		[]string{endpoint}, // Use real mock server address
-		WithBatchSize(200),
-		WithMaxWait(time.Millisecond*20),
+		WithMaxBatchSize(200),
+		WithMaxWaitTime(time.Millisecond*20),
 	)
 	assert.NoError(t, err)
 	if client != nil {
 		defer client.Close()
 
 		// Verify if options are set correctly
-		assert.Equal(t, uint32(200), client.batchSize)
-		assert.Equal(t, time.Millisecond*20, client.maxWait)
+		assert.Equal(t, uint32(200), client.options.maxBatchSize)
+		assert.Equal(t, time.Millisecond*20, client.options.maxWaitTime)
 	} else {
 		t.Fatal("client should not be nil")
 	}
@@ -137,8 +137,11 @@ func TestGetTimestamp(t *testing.T) {
 
 	ts, err := client.GetTimestamp(ctx)
 	assert.NoError(t, err)
-	assert.NotNil(t, ts)
-	assert.Greater(t, ts.Physical, int64(0))
+	physical, logical, err := ts.Wait()
+	assert.NoError(t, err)
+	assert.NotNil(t, physical)
+	assert.NotNil(t, logical)
+	assert.Greater(t, physical, int64(0))
 }
 
 func TestGetTimestampContextCancel(t *testing.T) {
@@ -161,8 +164,14 @@ func TestGetTimestampContextCancel(t *testing.T) {
 	cancel() // Cancel immediately
 
 	ts, err := client.GetTimestamp(ctx)
-	assert.Error(t, err)
-	assert.Nil(t, ts)
+	if err == nil {
+		physical, logical, err := ts.Wait()
+		assert.Error(t, err)
+		assert.Equal(t, int64(0), physical)
+		assert.Equal(t, int64(0), logical)
+	} else {
+		assert.Nil(t, ts)
+	}
 }
 
 func TestSwitchEndpoint(t *testing.T) {
@@ -192,7 +201,7 @@ func TestSwitchEndpoint(t *testing.T) {
 	time.Sleep(time.Millisecond * 100)
 
 	// Test switching nodes
-	err = client.switchToNextEndpoint()
+	err = client.conn.switchToNextEndpoint()
 	assert.NoError(t, err)
 
 	// Verify that timestamp can be obtained
