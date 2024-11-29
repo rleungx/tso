@@ -78,7 +78,7 @@ backend = "etcd"
 		{
 			name: "Invalid configuration - port is 0",
 			configData: `
-host = "localhost"
+host = "127.0.0.1"
 port = 0
 backend = "etcd"
 `,
@@ -87,7 +87,7 @@ backend = "etcd"
 		{
 			name: "Invalid configuration - empty Backend",
 			configData: `
-host = "localhost"
+host = "127.0.0.1"
 port = 7788
 backend = ""
 `,
@@ -96,7 +96,7 @@ backend = ""
 		{
 			name: "Logger configuration default values",
 			configData: `
-host = "localhost"
+host = "127.0.0.1"
 port = 7788
 backend = "etcd"
 `,

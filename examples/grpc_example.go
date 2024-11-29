@@ -17,7 +17,7 @@ func main() {
 	defer logger.Sync()
 
 	// Create client, set batch size and max wait time
-	tsoClient, err := client.NewTSOClient([]string{"localhost:8080"},
+	tsoClient, err := client.NewTSOClient([]string{"127.0.0.1:7788"},
 		client.WithMaxBatchSize(100),
 		client.WithMaxWaitTime(time.Millisecond*10),
 	)

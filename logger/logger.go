@@ -79,10 +79,7 @@ func Init(opts *Options) error {
 			Compress:   opts.Compress,
 		}
 		cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(writer), zapLevel))
-	}
-
-	// Add console output
-	if opts.EnableConsole {
+	} else if opts.EnableConsole {
 		cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), zapLevel))
 	}
 

@@ -27,12 +27,12 @@ func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
 	cfg.Dir = tmpDir
 
 	// Configure client URL
-	lcurl, _ := url.Parse("http://localhost:0")
+	lcurl, _ := url.Parse("http://127.0.0.1:0")
 	cfg.ListenClientUrls = []url.URL{*lcurl}
 	cfg.AdvertiseClientUrls = []url.URL{*lcurl}
 
 	// Configure peer URL
-	pcurl, _ := url.Parse("http://localhost:0")
+	pcurl, _ := url.Parse("http://127.0.0.1:0")
 	cfg.ListenPeerUrls = []url.URL{*pcurl}
 	cfg.AdvertisePeerUrls = []url.URL{*pcurl}
 	cfg.InitialCluster = fmt.Sprintf("%s=%s", cfg.Name, cfg.AdvertisePeerUrls[0].String())

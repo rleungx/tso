@@ -31,8 +31,8 @@ clean:
 
 # Install dependencies
 install:
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.35.2
+	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 
 # Add test targets
 test:
