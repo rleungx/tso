@@ -146,20 +146,19 @@ func TestTSOClusterBasic(t *testing.T) {
 	t.Run("LeaderFailover", func(t *testing.T) {
 		ts1, err := cli.GetTimestamp(context.Background())
 		require.NoError(t, err)
+		physical1, logical1, err := ts1.Wait()
+		require.NoError(t, err)
+		time1 := physical1*1e6 + logical1
 
 		err = srv1.Stop()
 		require.NoError(t, err)
 
 		time.Sleep(500 * time.Millisecond)
-
 		ts2, err := cli.GetTimestamp(context.Background())
 		require.NoError(t, err)
 
-		physical1, logical1, err := ts1.Wait()
-		require.NoError(t, err)
 		physical2, logical2, err := ts2.Wait()
 		require.NoError(t, err)
-		time1 := physical1*1e6 + logical1
 		time2 := physical2*1e6 + logical2
 		require.Greater(t, time2, time1, "timestamp should be monotonically increasing after failover")
 	})
@@ -184,9 +183,8 @@ func TestTSOMultiClients(t *testing.T) {
 	// Channel to collect all timestamps
 	timestamps := make(chan int64, numClients*requestsPerClient)
 	var wg sync.WaitGroup
-	wg.Add(numClients)
-
 	for i := 0; i < numClients; i++ {
+		wg.Add(1)
 		go func(clientID int) {
 			defer wg.Done()
 
@@ -221,8 +219,11 @@ func TestTSOMultiClients(t *testing.T) {
 		}(i)
 	}
 
+	wg.Add(1)
 	// Start a goroutine to collect and verify the uniqueness of timestamps
 	go func() {
+		defer wg.Done()
+
 		seen := make(map[int64]bool)
 		for i := 0; i < numClients*requestsPerClient; i++ {
 			ts := <-timestamps
@@ -267,17 +268,23 @@ func TestTSOStandbyServer(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		// Send request to the first node
 		ts1, err1 := cli1.GetTimestamp(context.Background())
-		physical1, logical1, err11 := ts1.Wait()
+		var physical1, logical1 int64
+		if err1 == nil {
+			physical1, logical1, err1 = ts1.Wait()
+		}
 
 		// Send request to the second node
 		ts2, err2 := cli2.GetTimestamp(context.Background())
-		physical2, logical2, err22 := ts2.Wait()
+		var physical2, logical2 int64
+		if err2 == nil {
+			physical2, logical2, err2 = ts2.Wait()
+		}
 
 		// At least one node should respond successfully
 		require.True(t, err1 == nil || err2 == nil, "at least one server should be active")
 
 		// If both succeed, timestamps should be monotonically increasing
-		if err1 == nil && err11 == nil && err2 == nil && err22 == nil {
+		if err1 == nil && err2 == nil {
 			time1 := physical1*1e6 + logical1
 			time2 := physical2*1e6 + logical2
 			require.NotEqual(t, time1, time2, "timestamps should be unique")
@@ -299,7 +306,9 @@ func TestTSOStandbyServer(t *testing.T) {
 	// Stop the current leader and verify role switch
 	// First, find out which is the leader
 	var leaderCli, standbyCli *client.TSOClient
-	if _, err1 := cli1.GetTimestamp(context.Background()); err1 == nil {
+	ts1, err1 := cli1.GetTimestamp(context.Background())
+	_, _, err11 := ts1.Wait()
+	if err1 == nil && err11 == nil {
 		leaderCli = cli1
 		standbyCli = cli2
 	} else {

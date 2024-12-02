@@ -14,10 +14,6 @@ import (
 
 // GetTimestamp implements the GetTimestamp method of the TSO service
 func (s *Server) GetTimestamp(reqStream proto.TSO_GetTimestampServer) error {
-	if !s.election.IsActive() {
-		return status.Error(codes.Unavailable, "server is not active")
-	}
-
 	const (
 		maxRetries = 3
 		retryDelay = 100 * time.Millisecond
@@ -26,11 +22,15 @@ func (s *Server) GetTimestamp(reqStream proto.TSO_GetTimestampServer) error {
 	for {
 		req, err := reqStream.Recv()
 		if err == io.EOF {
-			break
+			return nil
 		}
 		if err != nil {
 			logger.Error("failed to receive request", zap.Error(err))
 			return status.Error(codes.Internal, "failed to receive request")
+		}
+
+		if !s.election.IsActive() {
+			return status.Error(codes.Unavailable, "server is not active")
 		}
 
 		// Add retry logic
@@ -77,5 +77,4 @@ func (s *Server) GetTimestamp(reqStream proto.TSO_GetTimestampServer) error {
 			return status.Error(codes.Internal, "failed to send response")
 		}
 	}
-	return nil
 }

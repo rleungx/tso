@@ -57,43 +57,18 @@ func (c *TSOClient) processBatch(requests []*timestampRequest) {
 	}
 
 	maxRetries := len(c.conn.endpoints) * 2 // Maximum retries is twice the number of endpoints
-	var lastErr error
+	var (
+		err, lastErr error
+		stream       proto.TSO_GetTimestampClient
+	)
 
-	// Create stream outside the loop
-	c.conn.connMu.RLock()
-	client := c.conn.client
-	c.conn.connMu.RUnlock()
-
-	stream, err := client.GetTimestamp(c.ctx)
-	if err != nil {
-		c.failAllRequests(requests, err)
-		return
-	}
-	defer stream.CloseSend()
-
+	defer func() {
+		if stream != nil {
+			stream.CloseSend()
+		}
+	}()
 	for retry := 0; retry < maxRetries; retry++ {
 		if retry > 0 {
-			// Switch to the next endpoint before retrying
-			if err := c.conn.switchToNextEndpoint(); err != nil {
-				lastErr = err
-				continue
-			}
-
-			// Recreate stream (only after switching endpoint)
-			c.conn.connMu.RLock()
-			client = c.conn.client
-			c.conn.connMu.RUnlock()
-
-			stream, err = client.GetTimestamp(c.ctx)
-			if err != nil {
-				lastErr = err
-				if shouldRetry(err) {
-					continue
-				}
-				c.failAllRequests(requests, err)
-				return
-			}
-
 			// Retry wait
 			select {
 			case <-time.After(time.Second):
@@ -101,12 +76,33 @@ func (c *TSOClient) processBatch(requests []*timestampRequest) {
 				c.failAllRequests(requests, c.ctx.Err())
 				return
 			}
+			// Switch to the next endpoint before retrying
+			if err := c.conn.switchToNextEndpoint(); err != nil {
+				lastErr = err
+				continue
+			}
+		}
+
+		// Recreate stream (only after switching endpoint)
+		c.conn.connMu.RLock()
+		client := c.conn.client
+		c.conn.connMu.RUnlock()
+
+		stream, err = client.GetTimestamp(c.ctx)
+		if err != nil {
+			lastErr = err
+			if shouldRetry(err) {
+				continue
+			}
+			c.failAllRequests(requests, err)
+			return
 		}
 
 		// Send batch request
-		if err := stream.Send(&proto.GetTimestampRequest{
+		err := stream.Send(&proto.GetTimestampRequest{
 			Count: uint32(len(requests)),
-		}); err != nil {
+		})
+		if err != nil {
 			lastErr = err
 			if shouldRetry(err) {
 				continue

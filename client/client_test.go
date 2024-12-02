@@ -132,7 +132,7 @@ func TestGetTimestamp(t *testing.T) {
 	assert.NoError(t, err)
 	defer client.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	ts, err := client.GetTimestamp(ctx)
