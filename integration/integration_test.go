@@ -16,7 +16,12 @@ import (
 	"github.com/rleungx/tso/server"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/server/v3/embed"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
 	tmpDir, err := os.MkdirTemp("", "tso-test-*")

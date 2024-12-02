@@ -6,8 +6,12 @@ import (
 
 	"github.com/rleungx/tso/logger"
 	"github.com/spf13/viper"
+	"go.uber.org/goleak"
 )
 
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 func TestLoadConfig(t *testing.T) {
 	tests := []struct {
 		name        string

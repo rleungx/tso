@@ -9,7 +9,12 @@ import (
 
 	"github.com/rleungx/tso/storage"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func TestTimestampOracle(t *testing.T) {
 	tests := []struct {

@@ -8,8 +8,17 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 	"go.uber.org/zap"
 )
+
+func TestMain(m *testing.M) {
+	opts := []goleak.Option{
+		// see https://github.com/natefinch/lumberjack/issues/56
+		goleak.IgnoreTopFunction("gopkg.in/natefinch/lumberjack%2ev2.(*Logger).millRun"),
+	}
+	goleak.VerifyTestMain(m, opts...)
+}
 
 func TestLogger(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -8,8 +8,13 @@ import (
 
 	"github.com/rleungx/tso/proto"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 // Mock TSO server
 type mockTSOServer struct {
