@@ -39,8 +39,7 @@ test:
 	go test -v -timeout 1m ./...
 
 test-coverage:
-	go test -v -timeout 1m -coverprofile=coverage.out ./...
-	go tool cover -html=coverage.out -o coverage.html
+	go test -v -timeout 1m -coverprofile=coverage.txt ./...
 
 # Update PHONY targets
 .PHONY: all build check tidy generate clean install test test-coverage
