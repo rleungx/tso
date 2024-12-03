@@ -24,6 +24,8 @@ func NewElection(ctx context.Context, s storage.Storage, fn func() error) (Elect
 	switch v := s.(type) {
 	case *storage.EtcdClient:
 		return newEtcdElection(ctx, v.Client, fn)
+	case *storage.ConsulClient:
+		return newConsulElection(ctx, v.Client, fn)
 	case *storage.MemStorage:
 		return newMemElection()
 	default:

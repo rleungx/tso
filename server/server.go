@@ -50,6 +50,8 @@ func (s *Server) Start() error {
 	switch s.config.Backend {
 	case "etcd":
 		s.storage, err = storage.NewEtcdClient([]string{s.config.BackendAddress}, 5*time.Second)
+	case "consul":
+		s.storage, err = storage.NewConsulClient(s.config.BackendAddress)
 	case "mem":
 		s.storage, err = storage.NewMemStorage()
 	}

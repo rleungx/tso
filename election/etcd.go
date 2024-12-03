@@ -100,7 +100,7 @@ func (e *etcdElection) Campaign(ctx context.Context) error {
 	}
 
 	// Participate in election - use empty string as value
-	return e.election.Campaign(ctx, "")
+	return e.election.Campaign(ctx, "leader")
 }
 
 func (e *etcdElection) electionLoop() {
