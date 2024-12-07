@@ -8,9 +8,11 @@ import (
 
 	"github.com/hashicorp/consul/api"
 	"github.com/rleungx/tso/logger"
+	"go.uber.org/zap"
 )
 
 type consulElection struct {
+	id       string
 	client   *api.Client
 	key      string
 	session  string
@@ -21,24 +23,24 @@ type consulElection struct {
 	isActive bool
 }
 
-func newConsulElection(ctx context.Context, client *api.Client, fn func() error) (Election, error) {
+func newConsulElection(ctx context.Context, client *api.Client, id string, fn func() error) (Election, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	key := "/election"
+	key := "/election/active"
 
 	e := &consulElection{
-		client:   client,
-		key:      key,
-		ctx:      ctx,
-		cancel:   cancel,
-		fn:       fn,
-		isActive: false,
+		id:     id,
+		client: client,
+		key:    key,
+		ctx:    ctx,
+		cancel: cancel,
+		fn:     fn,
 	}
 
 	go e.electionLoop()
 	return e, nil
 }
 
-func (e *consulElection) Campaign(ctx context.Context) error {
+func (e *consulElection) Campaign() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -55,7 +57,7 @@ func (e *consulElection) Campaign(ctx context.Context) error {
 
 	kvpair := &api.KVPair{
 		Key:     e.key,
-		Value:   []byte("leader"),
+		Value:   []byte(e.id),
 		Session: e.session,
 	}
 
@@ -66,24 +68,29 @@ func (e *consulElection) Campaign(ctx context.Context) error {
 
 	if acquired {
 		e.isActive = true
-		go func() {
-			for {
-				select {
-				case <-e.ctx.Done():
-					logger.Info("renew session loop exit")
-					e.Resign()
-					return
-				case <-time.After(3 * time.Second):
-					_, _, err := e.client.Session().Renew(e.session, nil)
-					if err != nil {
-						continue
-					}
-				}
-			}
-		}()
+		go e.renew()
 		return nil
 	}
 	return fmt.Errorf("failed to acquire lock")
+}
+
+func (e *consulElection) renew() {
+	for {
+		select {
+		case <-e.ctx.Done():
+			logger.Info("renew session loop exit")
+			e.isActive = false
+			e.Resign()
+			return
+		case <-time.After(3 * time.Second):
+			_, _, err := e.client.Session().Renew(e.session, nil)
+			if err != nil {
+				e.isActive = false
+				e.Resign()
+				return
+			}
+		}
+	}
 }
 
 func (e *consulElection) Resign() error {
@@ -98,7 +105,6 @@ func (e *consulElection) Resign() error {
 	if err != nil {
 		return err
 	}
-	e.isActive = false
 	return nil
 }
 
@@ -116,17 +122,23 @@ func (e *consulElection) electionLoop() {
 	for {
 		select {
 		case <-e.ctx.Done():
+			logger.Info("election loop context done, exiting")
 			return
 		default:
-			if err := e.Campaign(e.ctx); err != nil {
+			logger.Info("starting election campaign")
+			err := e.Campaign()
+			if err != nil {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 
-			logger.Info("become active")
+			e.isActive = true
+			logger.Info("successfully became active node")
 			// Execute the specified function
 			if err := e.fn(); err != nil {
 				e.Resign() // Resign on failure
+				e.isActive = false
+				logger.Error("failed to run function, step down", zap.Error(err))
 				continue
 			}
 		}

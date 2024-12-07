@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/rleungx/tso/proto"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
 )
@@ -69,11 +69,11 @@ func TestNewTSOClient(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client, err := NewTSOClient(tt.endpoints)
 			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Nil(t, client)
+				require.Error(t, err)
+				require.Nil(t, client)
 			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, client)
+				require.NoError(t, err)
+				require.NotNil(t, client)
 				client.Close()
 			}
 		})
@@ -90,13 +90,13 @@ func TestTSOClientOptions(t *testing.T) {
 		WithMaxBatchSize(200),
 		WithMaxWaitTime(time.Millisecond*20),
 	)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	if client != nil {
 		defer client.Close()
 
 		// Verify if options are set correctly
-		assert.Equal(t, uint32(200), client.options.maxBatchSize)
-		assert.Equal(t, time.Millisecond*20, client.options.maxWaitTime)
+		require.Equal(t, uint32(200), client.options.maxBatchSize)
+		require.Equal(t, time.Millisecond*20, client.options.maxWaitTime)
 	} else {
 		t.Fatal("client should not be nil")
 	}
@@ -113,7 +113,7 @@ func setupMockServer(t *testing.T) (string, func()) {
 
 	// Start a listener on a random port
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	go func() {
 		if err := server.Serve(lis); err != nil {
@@ -134,19 +134,19 @@ func TestGetTimestamp(t *testing.T) {
 
 	// Create client using real server address
 	client, err := NewTSOClient([]string{endpoint})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer client.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	ts, err := client.GetTimestamp(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	physical, logical, err := ts.Wait()
-	assert.NoError(t, err)
-	assert.NotNil(t, physical)
-	assert.NotNil(t, logical)
-	assert.Greater(t, physical, int64(0))
+	require.NoError(t, err)
+	require.NotNil(t, physical)
+	require.NotNil(t, logical)
+	require.Greater(t, physical, int64(0))
 }
 
 func TestGetTimestampContextCancel(t *testing.T) {
@@ -155,7 +155,7 @@ func TestGetTimestampContextCancel(t *testing.T) {
 	defer cleanup()
 
 	client, err := NewTSOClient([]string{endpoint})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	if client == nil {
 		t.Fatal("client should not be nil")
 		return
@@ -171,11 +171,11 @@ func TestGetTimestampContextCancel(t *testing.T) {
 	ts, err := client.GetTimestamp(ctx)
 	if err == nil {
 		physical, logical, err := ts.Wait()
-		assert.Error(t, err)
-		assert.Equal(t, int64(0), physical)
-		assert.Equal(t, int64(0), logical)
+		require.Error(t, err)
+		require.Equal(t, int64(0), physical)
+		require.Equal(t, int64(0), logical)
 	} else {
-		assert.Nil(t, ts)
+		require.Nil(t, ts)
 	}
 }
 
@@ -195,7 +195,7 @@ func TestSwitchEndpoint(t *testing.T) {
 	}
 
 	client, err := NewTSOClient(endpoints)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	if client == nil {
 		t.Fatal("client should not be nil")
 		return
@@ -207,13 +207,13 @@ func TestSwitchEndpoint(t *testing.T) {
 
 	// Test switching nodes
 	err = client.conn.switchToNextEndpoint()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify that timestamp can be obtained
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	ts, err := client.GetTimestamp(ctx)
-	assert.NoError(t, err)
-	assert.NotNil(t, ts)
+	require.NoError(t, err)
+	require.NotNil(t, ts)
 }

@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,6 +30,7 @@ type Server struct {
 
 	proto.UnimplementedTSOServer
 
+	id              string
 	config          *config.Config
 	storage         storage.Storage
 	timestampOracle *tso.TimestampOracle
@@ -39,6 +42,7 @@ type Server struct {
 // NewServer creates a new server instance
 func NewServer(config *config.Config) *Server {
 	return &Server{
+		id:     generateID(),
 		config: config,
 	}
 }
@@ -52,6 +56,8 @@ func (s *Server) Start() error {
 		s.storage, err = storage.NewEtcdClient([]string{s.config.BackendAddress}, 5*time.Second)
 	case "consul":
 		s.storage, err = storage.NewConsulClient(s.config.BackendAddress)
+	case "redis":
+		s.storage, err = storage.NewRedisClient(s.config.BackendAddress)
 	case "mem":
 		s.storage, err = storage.NewMemStorage()
 	}
@@ -62,7 +68,7 @@ func (s *Server) Start() error {
 	s.timestampOracle = tso.NewTimestampOracle(s.ctx, s.storage)
 
 	// Initialize election
-	s.election, err = election.NewElection(s.ctx, s.storage, s.timestampOracle.UpdateTimestampLoop)
+	s.election, err = election.NewElection(s.ctx, s.storage, s.id, s.timestampOracle.UpdateTimestampLoop)
 	if err != nil {
 		return err
 	}
@@ -184,4 +190,25 @@ func loadTLSCredentials(certFile, keyFile string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 	return cert, nil
+}
+
+func generateID() string {
+	// Timestamp occupies 41 bits, shift left by 22 bits
+	timestampShift := 22
+	// Get the current timestamp (milliseconds)
+	timestamp := uint64(time.Now().UnixMilli())
+
+	// Generate random number (22 bits)
+	var randomBytes [8]byte
+	_, err := rand.Read(randomBytes[:])
+	if err != nil {
+		random := uint64(time.Now().UnixNano() & ((1 << timestampShift) - 1))
+		return fmt.Sprintf("%d", (timestamp<<timestampShift)|random)
+	}
+
+	// Limit the random number to 22 bits
+	random := binary.BigEndian.Uint64(randomBytes[:]) & ((1 << timestampShift) - 1)
+
+	// Combine timestamp and random number
+	return fmt.Sprintf("%d", (timestamp<<timestampShift)|random)
 }

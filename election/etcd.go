@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rleungx/tso/logger"
@@ -17,27 +16,6 @@ const (
 	defaultElectionPrefix = "/election"
 )
 
-// Role represents the role
-type Role int32
-
-const (
-	// RoleStandby indicates standby status, not providing service
-	RoleStandby Role = iota
-	// RoleActive indicates active status, providing service
-	RoleActive
-)
-
-func (r Role) String() string {
-	switch r {
-	case RoleStandby:
-		return "Standby"
-	case RoleActive:
-		return "Active"
-	default:
-		return "Unknown"
-	}
-}
-
 type etcdElection struct {
 	sync.WaitGroup
 	client   *clientv3.Client
@@ -46,10 +24,11 @@ type etcdElection struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	fn       func() error
-	role     atomic.Int32
+	isActive bool
+	id       string
 }
 
-func newEtcdElection(ctx context.Context, client *clientv3.Client, fn func() error) (Election, error) {
+func newEtcdElection(ctx context.Context, client *clientv3.Client, id string, fn func() error) (Election, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	session, err := concurrency.NewSession(client, concurrency.WithTTL(3))
 	if err != nil {
@@ -67,6 +46,7 @@ func newEtcdElection(ctx context.Context, client *clientv3.Client, fn func() err
 		ctx:      ctx,
 		cancel:   cancel,
 		fn:       fn,
+		id:       id,
 	}
 	e.Add(1)
 	go e.electionLoop()
@@ -93,14 +73,13 @@ func (e *etcdElection) Close() error {
 	return nil
 }
 
-func (e *etcdElection) Campaign(ctx context.Context) error {
+func (e *etcdElection) Campaign() error {
 	// Check if election instance exists
 	if e.election == nil {
 		return fmt.Errorf("election instance is nil")
 	}
 
-	// Participate in election - use empty string as value
-	return e.election.Campaign(ctx, "leader")
+	return e.election.Campaign(e.ctx, e.id)
 }
 
 func (e *etcdElection) electionLoop() {
@@ -112,17 +91,16 @@ func (e *etcdElection) electionLoop() {
 			return
 		default:
 			logger.Info("starting election campaign")
-			// Try to become the active node first
-			err := e.Campaign(e.ctx)
+			err := e.Campaign()
 			if err != nil {
 				logger.Error("failed to campaign for election", zap.Error(err))
 				continue
 			}
 			logger.Info("successfully became active node")
-			e.role.Store(int32(RoleActive))
+			e.isActive = true
 			if err := e.fn(); err != nil {
-				logger.Error("failed to run function, becoming standby", zap.Error(err))
-				e.role.Store(int32(RoleStandby))
+				logger.Error("failed to run function, step down", zap.Error(err))
+				e.isActive = false
 				continue
 			}
 		}
@@ -130,5 +108,5 @@ func (e *etcdElection) electionLoop() {
 }
 
 func (e *etcdElection) IsActive() bool {
-	return Role(e.role.Load()) == RoleActive
+	return e.isActive
 }

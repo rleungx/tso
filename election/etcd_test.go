@@ -113,7 +113,7 @@ func TestCampaign(t *testing.T) {
 	// Create the first node, it will automatically become the leader
 	leaderSelected := make(chan struct{})
 	var leaderOnce sync.Once
-	e1, err := newEtcdElection(ctx, cli, func() error {
+	e1, err := newEtcdElection(ctx, cli, "1", func() error {
 		leaderOnce.Do(func() {
 			close(leaderSelected)
 		})
@@ -133,7 +133,7 @@ func TestCampaign(t *testing.T) {
 	// Create the second node, it should not become the leader
 	secondNodeTried := make(chan struct{})
 	var secondOnce sync.Once
-	e2, err := newEtcdElection(ctx, cli, func() error {
+	e2, err := newEtcdElection(ctx, cli, "2", func() error {
 		secondOnce.Do(func() {
 			close(secondNodeTried)
 		})
@@ -167,7 +167,7 @@ func TestResign(t *testing.T) {
 	// Create the first node and wait for it to become the leader
 	leaderSelected := make(chan struct{})
 	var leaderOnce sync.Once
-	e1, err := newEtcdElection(ctx, cli, func() error {
+	e1, err := newEtcdElection(ctx, cli, "1", func() error {
 		leaderOnce.Do(func() {
 			close(leaderSelected)
 		})
@@ -187,7 +187,7 @@ func TestResign(t *testing.T) {
 	// Create the second node
 	secondNodeSelected := make(chan struct{})
 	var secondOnce sync.Once
-	e2, err := newEtcdElection(ctx, cli, func() error {
+	e2, err := newEtcdElection(ctx, cli, "2", func() error {
 		secondOnce.Do(func() {
 			close(secondNodeSelected)
 		})
@@ -226,7 +226,7 @@ func TestClose(t *testing.T) {
 	// Create a node and wait for it to become the leader
 	leaderSelected := make(chan struct{})
 	var leaderOnce sync.Once
-	election, err := newEtcdElection(ctx, cli, func() error {
+	election, err := newEtcdElection(ctx, cli, "1", func() error {
 		leaderOnce.Do(func() {
 			close(leaderSelected)
 		})
@@ -246,9 +246,6 @@ func TestClose(t *testing.T) {
 	err = election.Close()
 	require.NoError(t, err)
 
-	// Verify that it cannot participate in the election after closing
-	ctxTimeout, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	err = election.Campaign(ctxTimeout)
+	err = election.Campaign()
 	require.Error(t, err)
 }

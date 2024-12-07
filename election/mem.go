@@ -1,9 +1,5 @@
 package election
 
-import (
-	"context"
-)
-
 // MemElection is an in-memory implementation for testing
 type MemElection struct{}
 
@@ -19,7 +15,7 @@ func (m *MemElection) Resign() error {
 	return nil
 }
 
-func (m *MemElection) Campaign(ctx context.Context) error {
+func (m *MemElection) Campaign() error {
 	return nil
 }
 

@@ -39,7 +39,7 @@ TSO (Timestamp Oracle) is a distributed timestamp allocation service that provid
 
 ### HTTP interface
 ```bash
-# Get timestamp
+# Request example
 curl -X GET http://127.0.0.1:7788/timestamp?count=10
 
 # Response example
@@ -47,7 +47,7 @@ curl -X GET http://127.0.0.1:7788/timestamp?count=10
 ```
 
 ### gRPC interface
-See `https://github.com/rleungx/tso/blob/main/examples/grpc_example.go`
+Details can be found in [example](https://github.com/rleungx/tso/blob/main/examples/grpc_example.go)
 
 ```bash
 go run examples/grpc_example.go
