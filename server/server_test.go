@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -25,7 +27,7 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-// Add helper function to start embedded etcd server
+// Add helper function to start embedded etcd
 func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
 	tmpDir, err := os.MkdirTemp("", "etcd-test-*")
 	if err != nil {
@@ -213,4 +215,183 @@ func TestGracefulShutdown(t *testing.T) {
 	// Verify HTTP server is shut down
 	_, err = http.Get(fmt.Sprintf("http://%s:%d/timestamp", cfg.Host, cfg.Port))
 	require.Error(t, err, "HTTP server should be completely shutdown")
+}
+
+func TestHTTPHandler(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	gin.DefaultWriter = io.Discard
+
+	// Start embedded etcd
+	e, err := startEmbeddedEtcd(t)
+	require.NoError(t, err)
+	defer e.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	clientURL := fmt.Sprintf("http://%s", e.Clients[0].Addr().String())
+	cfg := &config.Config{
+		Host:           "127.0.0.1",
+		Port:           10001,
+		Backend:        "etcd",
+		BackendAddress: clientURL,
+	}
+
+	s := NewServer(cfg)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start()
+	}()
+	defer s.Stop()
+
+	client := &http.Client{
+		Timeout: time.Second,
+	}
+
+	// Ensure server is ready to accept requests
+	time.Sleep(100 * time.Millisecond)
+
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		query          string
+		body           io.Reader
+		expectedStatus int
+	}{
+		{
+			name:           "Get timestamp - no parameters",
+			method:         "GET",
+			path:           "/timestamp",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "Get timestamp - with count parameter",
+			method:         "GET",
+			path:           "/timestamp",
+			query:          "count=5",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "Unsupported method",
+			method:         "POST",
+			path:           "/timestamp",
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "Invalid path",
+			method:         "GET",
+			path:           "/invalid",
+			expectedStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			urlStr := fmt.Sprintf("http://%s:%d%s", cfg.Host, 10001, tt.path)
+			if tt.query != "" {
+				urlStr += "?" + tt.query
+			}
+			req, err := http.NewRequest(tt.method, urlStr, tt.body)
+			require.NoError(t, err)
+
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			require.Equal(t, tt.expectedStatus, resp.StatusCode)
+
+			if resp.StatusCode == http.StatusOK {
+				var result struct {
+					Timestamp struct {
+						Physical int64 `json:"physical"`
+						Logical  int64 `json:"logical"`
+					} `json:"timestamp"`
+					Count uint32 `json:"count"`
+				}
+				err = json.NewDecoder(resp.Body).Decode(&result)
+				require.NoError(t, err)
+				require.NotZero(t, result.Timestamp.Physical)
+			}
+		})
+	}
+}
+
+func TestHTTPHandlerConcurrency(t *testing.T) {
+	// Start embedded etcd
+	e, err := startEmbeddedEtcd(t)
+	require.NoError(t, err)
+	defer e.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	clientURL := fmt.Sprintf("http://%s", e.Clients[0].Addr().String())
+	cfg := &config.Config{
+		Host:           "127.0.0.1",
+		Port:           10002,
+		Backend:        "etcd",
+		BackendAddress: clientURL,
+	}
+
+	s := NewServer(cfg)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start()
+	}()
+	defer s.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Concurrency test
+	concurrency := 10
+	requests := 100
+	var wg sync.WaitGroup
+	type Timestamp struct {
+		Physical int64
+		Logical  int64
+	}
+	timestamps := make([]Timestamp, concurrency*requests)
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			client := &http.Client{}
+
+			for j := 0; j < requests; j++ {
+				url := fmt.Sprintf("http://%s:%d/timestamp", cfg.Host, 10002)
+				resp, err := client.Get(url)
+				require.NoError(t, err)
+
+				var result struct {
+					Timestamp struct {
+						Physical int64 `json:"physical"`
+						Logical  int64 `json:"logical"`
+					} `json:"timestamp"`
+					Count uint32 `json:"count"`
+				}
+				err = json.NewDecoder(resp.Body).Decode(&result)
+				require.NoError(t, err)
+				resp.Body.Close()
+
+				idx := workerID*requests + j
+				timestamps[idx].Physical = result.Timestamp.Physical
+				timestamps[idx].Logical = result.Timestamp.Logical
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify timestamps are strictly increasing
+	sort.Slice(timestamps, func(i, j int) bool {
+		if timestamps[i].Physical != timestamps[j].Physical {
+			return timestamps[i].Physical < timestamps[j].Physical
+		}
+		return timestamps[i].Logical < timestamps[j].Logical
+	})
+
+	for i := 1; i < len(timestamps); i++ {
+		require.True(t,
+			timestamps[i].Physical > timestamps[i-1].Physical ||
+				(timestamps[i].Physical == timestamps[i-1].Physical && timestamps[i].Logical > timestamps[i-1].Logical),
+			"Timestamps must be strictly increasing")
+	}
 }

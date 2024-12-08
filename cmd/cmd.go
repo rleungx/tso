@@ -59,6 +59,7 @@ func Execute() {
 	flags.String("cacert-file", "", "Path to CA certificate file")
 	flags.String("cert-file", "", "Path to TLS certificate file")
 	flags.String("key-file", "", "Path to TLS key file")
+	flags.String("config", "", "Path to configuration file")
 
 	if err := rootCmd.Execute(); err != nil {
 		logger.Fatal("Failed to execute command", zap.Error(err)) // Use zap to log fatal errors

@@ -23,6 +23,7 @@ func LoadConfig(v *viper.Viper) (*Config, error) {
 	if v == nil {
 		v = viper.New()
 	}
+	v.SetConfigFile(v.GetString("config"))
 
 	// Set default values
 	v.SetDefault("host", "127.0.0.1")

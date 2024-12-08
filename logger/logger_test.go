@@ -203,3 +203,106 @@ func TestLogger(t *testing.T) {
 		}
 	})
 }
+
+func TestLoggerInitialization(t *testing.T) {
+	// Test default configuration
+	t.Run("default options", func(t *testing.T) {
+		err := Init(nil)
+		require.NoError(t, err)
+		require.NotNil(t, L)
+		Close()
+	})
+
+	// Test invalid log level
+	t.Run("invalid log level", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.Level = "invalid"
+		err := Init(opts)
+		require.Error(t, err)
+	})
+
+	// Test file output
+	t.Run("file output", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.Filename = "test.log"
+		err := Init(opts)
+		require.NoError(t, err)
+		Info("test message")
+		require.FileExists(t, "test.log")
+		Close()
+		os.Remove("test.log")
+	})
+
+	// Test JSON format
+	t.Run("json format", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.Format = "json"
+		err := Init(opts)
+		require.NoError(t, err)
+		Close()
+	})
+}
+
+func TestLogMethods(t *testing.T) {
+	Init(nil)
+	defer Close()
+
+	// Test all log levels
+	t.Run("log levels", func(t *testing.T) {
+		Debug("debug message")
+		Info("info message")
+		Warn("warn message")
+		Error("error message")
+		// Fatal is not tested because it would cause the program to exit
+	})
+
+	// Test log with fields
+	t.Run("log with fields", func(t *testing.T) {
+		Info("message with fields",
+			zap.String("key", "value"),
+			zap.Int("count", 1))
+	})
+}
+
+func TestWithFields(t *testing.T) {
+	// Test With method
+	t.Run("logger with fields", func(t *testing.T) {
+		Init(nil)
+		logger := With(zap.String("service", "test"))
+		require.NotNil(t, logger)
+		Close()
+	})
+
+	// Test With method on nil logger
+	t.Run("with on nil logger", func(t *testing.T) {
+		L = nil
+		logger := With(zap.String("service", "test"))
+		require.Nil(t, logger)
+	})
+}
+
+func TestSync(t *testing.T) {
+	// Test Sync method - using file instead of stdout
+	t.Run("sync logger", func(t *testing.T) {
+		opts := DefaultOptions()
+		opts.Filename = "test.log" // Using file output
+		opts.EnableConsole = false // Disabling console output
+
+		err := Init(opts)
+		require.NoError(t, err)
+
+		Info("test message")
+		err = Sync()
+		require.NoError(t, err)
+
+		Close()
+		os.Remove("test.log")
+	})
+
+	// Test Sync method on nil logger
+	t.Run("sync nil logger", func(t *testing.T) {
+		L = nil
+		err := Sync()
+		require.NoError(t, err)
+	})
+}

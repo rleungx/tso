@@ -21,7 +21,9 @@ type TimestampResponse struct {
 func (s *Server) setupRoutes() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
-	router.GET("/timestamp", s.GetTS) // Register handler
+
+	router.GET("/timestamp", s.GetTS)
+
 	return router
 }
 
@@ -34,6 +36,9 @@ func (s *Server) GetTS(c *gin.Context) {
 	}
 
 	countStr := c.Query("count")
+	if countStr == "" {
+		countStr = "1"
+	}
 	count, err := strconv.ParseUint(countStr, 10, 32) // Convert string to uint32
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid count"})

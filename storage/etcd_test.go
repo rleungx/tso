@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc/grpclog"
@@ -83,7 +83,7 @@ func TestEtcdClient(t *testing.T) {
 
 	t.Run("SaveAndLoadTimestamp", func(t *testing.T) {
 		client, err := createClient()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer client.Close()
 
 		testCases := []struct {
@@ -117,53 +117,53 @@ func TestEtcdClient(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				err := client.SaveTimestamp(tc.time)
 				if tc.wantErr {
-					assert.Error(t, err)
+					require.Error(t, err)
 					return
 				}
-				assert.NoError(t, err)
+				require.NoError(t, err)
 
 				loaded, err := client.LoadTimestamp()
-				assert.NoError(t, err)
-				assert.Equal(t, tc.time.UTC(), loaded.UTC())
+				require.NoError(t, err)
+				require.Equal(t, tc.time.UTC(), loaded.UTC())
 			})
 		}
 	})
 
 	t.Run("LoadNonExistentTimestamp", func(t *testing.T) {
 		client, err := createClient()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer client.Close()
 
 		// Clear existing timestamp
 		etcdClient := client.(*EtcdClient)
 		_, err = etcdClient.Client.Delete(context.Background(), "lastTimestamp")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		loaded, err := client.LoadTimestamp()
-		assert.NoError(t, err)
-		assert.True(t, loaded.IsZero())
+		require.NoError(t, err)
+		require.True(t, loaded.IsZero())
 	})
 
 	t.Run("CloseClient", func(t *testing.T) {
 		client, err := createClient()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		// Test normal close
 		err = client.Close()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		// Test repeated close
 		err = client.Close()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		// Test operations after close - should return an error but not panic
 		_, err = client.LoadTimestamp()
-		assert.Error(t, err)
+		require.Error(t, err)
 	})
 
 	t.Run("ConcurrentOperations", func(t *testing.T) {
 		client, err := createClient()
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer client.Close()
 
 		var wg sync.WaitGroup
@@ -174,9 +174,9 @@ func TestEtcdClient(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				now := time.Now().UTC().Round(time.Second)
-				assert.NoError(t, client.SaveTimestamp(now))
+				require.NoError(t, client.SaveTimestamp(now))
 				_, err := client.LoadTimestamp()
-				assert.NoError(t, err)
+				require.NoError(t, err)
 			}()
 		}
 
