@@ -50,8 +50,8 @@ func NewTimestampOracle(ctx context.Context, storage storage.Storage) *Timestamp
 }
 
 func (ts *TimestampOracle) UpdateTimestampLoop() error {
-	defer ts.Reset()
-	if err := ts.SyncTimestamp(ts.storage); err != nil {
+	defer ts.reset()
+	if err := ts.syncTimestamp(ts.storage); err != nil {
 		logger.Error("failed to sync timestamp", zap.Error(err))
 		return err
 	}
@@ -64,7 +64,7 @@ func (ts *TimestampOracle) UpdateTimestampLoop() error {
 		case <-ts.ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := ts.UpdateTimestamp(ts.storage); err != nil {
+			if err := ts.updateTimestamp(ts.storage); err != nil {
 				logger.Error("failed to update timestamp", zap.Error(err))
 				return err
 			}
@@ -89,7 +89,7 @@ func (t *TimestampOracle) setPhysical(next time.Time, force bool) {
 		return
 	}
 	// make sure the ts won't fall back
-	if SubTSOPhysicalByWallClock(next, t.physical) > 0 {
+	if subTSOPhysicalByWallClock(next, t.physical) > 0 {
 		t.physical = next
 		t.logical = 0
 	}
@@ -114,8 +114,8 @@ func (t *TimestampOracle) GenerateTimestamp(ctx context.Context, count uint32) (
 	return physical, logical, nil
 }
 
-// SyncTimestamp is used to synchronize the timestamp.
-func (ts *TimestampOracle) SyncTimestamp(s storage.Storage) error {
+// syncTimestamp is used to synchronize the timestamp.
+func (ts *TimestampOracle) syncTimestamp(s storage.Storage) error {
 	last, err := s.LoadTimestamp()
 	if err != nil {
 		return err
@@ -124,7 +124,7 @@ func (ts *TimestampOracle) SyncTimestamp(s storage.Storage) error {
 	next := time.Now()
 	// If the current system time minus the saved timestamp is less than `UpdateTimestampGuard`,
 	// the timestamp allocation will start from the saved timestamp temporarily.
-	if SubRealTimeByWallClock(next, last) < updateTimestampGuard {
+	if subRealTimeByWallClock(next, last) < updateTimestampGuard {
 		next = last.Add(updateTimestampGuard)
 	}
 
@@ -139,12 +139,12 @@ func (ts *TimestampOracle) SyncTimestamp(s storage.Storage) error {
 	return nil
 }
 
-// UpdateTimestamp is used to update the timestamp.
-func (ts *TimestampOracle) UpdateTimestamp(s storage.Storage) error {
+// updateTimestamp is used to update the timestamp.
+func (ts *TimestampOracle) updateTimestamp(s storage.Storage) error {
 	prevPhysical, prevLogical := ts.get()
 
 	now := time.Now()
-	jetLag := SubRealTimeByWallClock(now, prevPhysical)
+	jetLag := subRealTimeByWallClock(now, prevPhysical)
 
 	var next time.Time
 	// If the system time is greater, it will be synchronized with the system time.
@@ -161,7 +161,7 @@ func (ts *TimestampOracle) UpdateTimestamp(s storage.Storage) error {
 
 	// It is not safe to increase the physical time to `next`.
 	// The time window needs to be updated and saved to storage.
-	if SubRealTimeByWallClock(ts.lastSavedTime.Load().(time.Time), next) <= updateTimestampGuard {
+	if subRealTimeByWallClock(ts.lastSavedTime.Load().(time.Time), next) <= updateTimestampGuard {
 		save := next.Add(3 * time.Second)
 		if err := s.SaveTimestamp(save); err != nil {
 			return err
@@ -173,24 +173,24 @@ func (ts *TimestampOracle) UpdateTimestamp(s storage.Storage) error {
 	return nil
 }
 
-// SubRealTimeByWallClock returns the duration between two different time.Time structs.
-// You should use it to compare the real-world system time.
-// And DO NOT USE IT TO COMPARE two TSOs' physical times directly in some cases.
-func SubRealTimeByWallClock(after, before time.Time) time.Duration {
-	return time.Duration(after.UnixNano() - before.UnixNano())
-}
-
-// SubTSOPhysicalByWallClock returns the duration between two different TSOs' physical times with millisecond precision.
-func SubTSOPhysicalByWallClock(after, before time.Time) int64 {
-	return after.UnixNano()/int64(time.Millisecond) - before.UnixNano()/int64(time.Millisecond)
-}
-
-// Reset resets the TimestampOracle to its initial state
-func (t *TimestampOracle) Reset() {
+// reset resets the TimestampOracle to its initial state
+func (t *TimestampOracle) reset() {
 	t.Lock()
 	defer t.Unlock()
 
 	t.physical = ZeroTime
 	t.logical = 0
 	t.lastSavedTime.Store(ZeroTime)
+}
+
+// subRealTimeByWallClock returns the duration between two different time.Time structs.
+// You should use it to compare the real-world system time.
+// And DO NOT USE IT TO COMPARE two TSOs' physical times directly in some cases.
+func subRealTimeByWallClock(after, before time.Time) time.Duration {
+	return time.Duration(after.UnixNano() - before.UnixNano())
+}
+
+// subTSOPhysicalByWallClock returns the duration between two different TSOs' physical times with millisecond precision.
+func subTSOPhysicalByWallClock(after, before time.Time) int64 {
+	return after.UnixNano()/int64(time.Millisecond) - before.UnixNano()/int64(time.Millisecond)
 }

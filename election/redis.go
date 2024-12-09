@@ -156,7 +156,7 @@ func (e *redisElection) renew() {
 	}
 }
 
-// SetFn set the function to be executed
-func (e *redisElection) SetFn(fn func() error) {
+// setFn set the function to be executed
+func (e *redisElection) setFn(fn func() error) {
 	e.fn = fn
 }

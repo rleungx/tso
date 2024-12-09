@@ -40,7 +40,7 @@ func TestRedisElection(t *testing.T) {
 
 		e1, err := newRedisElection(ctx, client1, "node1")
 		require.NoError(t, err)
-		e1.(*redisElection).SetFn(func() error {
+		e1.(*redisElection).setFn(func() error {
 			called = true
 			<-e1.(*redisElection).ctx.Done()
 			return nil
@@ -59,7 +59,7 @@ func TestRedisElection(t *testing.T) {
 		})
 		e2, err := newRedisElection(ctx, client2, "node2")
 		require.NoError(t, err)
-		e2.(*redisElection).SetFn(func() error {
+		e2.(*redisElection).setFn(func() error {
 			called = true
 			<-e2.(*redisElection).ctx.Done()
 			return nil
@@ -85,7 +85,7 @@ func TestRedisElection(t *testing.T) {
 
 		e1, err := newRedisElection(ctx, client1, "node1")
 		require.NoError(t, err)
-		e1.(*redisElection).SetFn(func() error {
+		e1.(*redisElection).setFn(func() error {
 			<-e1.(*redisElection).ctx.Done()
 			return nil
 		})
@@ -96,7 +96,7 @@ func TestRedisElection(t *testing.T) {
 
 		e2, err := newRedisElection(ctx, client2, "node2")
 		require.NoError(t, err)
-		e2.(*redisElection).SetFn(func() error {
+		e2.(*redisElection).setFn(func() error {
 			<-e2.(*redisElection).ctx.Done()
 			return nil
 		})
@@ -130,7 +130,7 @@ func TestRedisElection(t *testing.T) {
 		failCount := 0
 		e, err := newRedisElection(ctx, client, "node-fail")
 		require.NoError(t, err)
-		e.(*redisElection).SetFn(func() error {
+		e.(*redisElection).setFn(func() error {
 			failCount++
 			return fmt.Errorf("simulated execution failure")
 		})
@@ -156,7 +156,7 @@ func TestRedisElection(t *testing.T) {
 
 		e, err := newRedisElection(ctx, client, "node-renew")
 		require.NoError(t, err)
-		e.(*redisElection).SetFn(func() error {
+		e.(*redisElection).setFn(func() error {
 			<-e.(*redisElection).ctx.Done()
 			return nil
 		})
@@ -202,7 +202,7 @@ func TestRedisElection(t *testing.T) {
 			})
 			e, err := newRedisElection(ctx, client, fmt.Sprintf("node-%d", i))
 			require.NoError(t, err)
-			e.(*redisElection).SetFn(func() error {
+			e.(*redisElection).setFn(func() error {
 				<-e.(*redisElection).ctx.Done()
 				return nil
 			})

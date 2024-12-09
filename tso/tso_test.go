@@ -100,7 +100,7 @@ func TestTimestampOracle(t *testing.T) {
 				ctx := context.Background()
 
 				// Sync timestamp first
-				err := tso.SyncTimestamp(storage)
+				err := tso.syncTimestamp(storage)
 				require.NoError(t, err, "Failed to sync timestamp")
 
 				// Test normal allocation
@@ -135,7 +135,7 @@ func TestTimestampOracle(t *testing.T) {
 				err = storage.SaveTimestamp(backwardTime)
 				require.NoError(t, err)
 
-				err = tso.SyncTimestamp(storage)
+				err = tso.syncTimestamp(storage)
 				require.NoError(t, err)
 
 				physical2, _, err := tso.GenerateTimestamp(ctx, 1)
@@ -302,10 +302,37 @@ func TestSyncTimestamp(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.setup()
-			err := tso.SyncTimestamp(storage)
+			err := tso.syncTimestamp(storage)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("SyncTimestamp() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("syncTimestamp() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
+}
+
+func TestUpdateTimestamp(t *testing.T) {
+	// Create a new MemStorage instance
+	memStorage, err := storage.NewMemStorage()
+	require.NoError(t, err)
+	defer memStorage.Close()
+
+	// Create a new TimestampOracle instance
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tso := NewTimestampOracle(ctx, memStorage)
+	// Initialize timestamp
+	err = tso.syncTimestamp(memStorage)
+	require.NoError(t, err, "syncTimestamp failed")
+
+	// Manually set logical clock close to maximum value
+	tso.logical = maxLogical - 1
+	// Call updateTimestamp method
+	err = tso.updateTimestamp(memStorage)
+	require.NoError(t, err, "updateTimestamp failed")
+	// Get updated timestamp
+	newPhysical, newLogical := tso.get()
+	// Check if logical time has not overflowed
+	require.Equal(t, int64(0), newLogical, "expected logical time to be reset to 0 after update")
+	// Check if physical time has been updated
+	require.NotEqual(t, ZeroTime, newPhysical, "expected physical time to be updated")
 }

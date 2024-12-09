@@ -39,7 +39,7 @@ func TestConsulCampaign(t *testing.T) {
 
 	e1, err := newConsulElection(ctx, client1.Client, "test-id1")
 	assert.NoError(t, err)
-	e1.(*consulElection).SetFn(func() error {
+	e1.(*consulElection).setFn(func() error {
 		<-e1.(*consulElection).ctx.Done()
 		return nil
 	})
@@ -53,7 +53,7 @@ func TestConsulCampaign(t *testing.T) {
 
 	e2, err := newConsulElection(ctx, client2.Client, "test-id2")
 	assert.NoError(t, err)
-	e2.(*consulElection).SetFn(func() error {
+	e2.(*consulElection).setFn(func() error {
 		<-e2.(*consulElection).ctx.Done()
 		return nil
 	})

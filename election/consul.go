@@ -151,7 +151,7 @@ func (e *consulElection) electionLoop() {
 	}
 }
 
-// SetFn set the function to be executed
-func (e *consulElection) SetFn(fn func() error) {
+// setFn set the function to be executed
+func (e *consulElection) setFn(fn func() error) {
 	e.fn = fn
 }
