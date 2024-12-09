@@ -21,11 +21,11 @@ const (
 
 // Election structure
 type redisElection struct {
+	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	client   *redis.Client
 	id       string
+	client   *redis.Client
 	fn       func() error
 	isActive bool
 }
@@ -115,7 +115,6 @@ func (e *redisElection) electionLoop() {
 			logger.Info("election loop context done, exiting")
 			return
 		default:
-			logger.Info("starting election campaign")
 			err := e.Campaign()
 			if err != nil {
 				time.Sleep(100 * time.Millisecond)

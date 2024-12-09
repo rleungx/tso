@@ -12,30 +12,33 @@ import (
 )
 
 type consulElection struct {
+	wg       sync.WaitGroup
+	mu       sync.Mutex
+	ctx      context.Context
+	cancel   context.CancelFunc
 	id       string
 	client   *api.Client
 	key      string
 	session  string
-	ctx      context.Context
-	cancel   context.CancelFunc
 	fn       func() error
-	mu       sync.Mutex
 	isActive bool
 }
 
-func newConsulElection(ctx context.Context, client *api.Client, id string, fn func() error) (Election, error) {
+func newConsulElection(ctx context.Context, client *api.Client, id string, fn ...func() error) (Election, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	key := "/election/active"
 
 	e := &consulElection{
 		id:     id,
 		client: client,
-		key:    key,
+		key:    "election/active",
 		ctx:    ctx,
 		cancel: cancel,
-		fn:     fn,
 	}
 
+	if len(fn) > 0 {
+		e.fn = fn[0]
+	}
+	e.wg.Add(1)
 	go e.electionLoop()
 	return e, nil
 }
@@ -48,7 +51,7 @@ func (e *consulElection) Campaign() error {
 	sessionID, _, err := e.client.Session().Create(&api.SessionEntry{
 		TTL:       "10s",
 		Behavior:  api.SessionBehaviorDelete,
-		LockDelay: 0,
+		LockDelay: time.Millisecond,
 	}, nil)
 	if err != nil {
 		return err
@@ -68,6 +71,7 @@ func (e *consulElection) Campaign() error {
 
 	if acquired {
 		e.isActive = true
+		e.wg.Add(1)
 		go e.renew()
 		return nil
 	}
@@ -75,6 +79,7 @@ func (e *consulElection) Campaign() error {
 }
 
 func (e *consulElection) renew() {
+	defer e.wg.Done()
 	for {
 		select {
 		case <-e.ctx.Done():
@@ -110,6 +115,7 @@ func (e *consulElection) Resign() error {
 
 func (e *consulElection) Close() error {
 	e.cancel()
+	e.wg.Wait()
 	return nil
 }
 
@@ -118,6 +124,7 @@ func (e *consulElection) IsActive() bool {
 }
 
 func (e *consulElection) electionLoop() {
+	defer e.wg.Done()
 	defer e.cancel()
 	for {
 		select {
@@ -125,7 +132,6 @@ func (e *consulElection) electionLoop() {
 			logger.Info("election loop context done, exiting")
 			return
 		default:
-			logger.Info("starting election campaign")
 			err := e.Campaign()
 			if err != nil {
 				time.Sleep(100 * time.Millisecond)
@@ -143,4 +149,9 @@ func (e *consulElection) electionLoop() {
 			}
 		}
 	}
+}
+
+// SetFn set the function to be executed
+func (e *consulElection) SetFn(fn func() error) {
+	e.fn = fn
 }

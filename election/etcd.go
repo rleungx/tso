@@ -18,14 +18,14 @@ const (
 
 type etcdElection struct {
 	sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
+	id       string
 	client   *clientv3.Client
 	session  *concurrency.Session
 	election *concurrency.Election
-	ctx      context.Context
-	cancel   context.CancelFunc
 	fn       func() error
 	isActive bool
-	id       string
 }
 
 func newEtcdElection(ctx context.Context, client *clientv3.Client, id string, fn func() error) (Election, error) {
@@ -90,7 +90,6 @@ func (e *etcdElection) electionLoop() {
 			logger.Info("election loop context done, exiting")
 			return
 		default:
-			logger.Info("starting election campaign")
 			err := e.Campaign()
 			if err != nil {
 				logger.Error("failed to campaign for election", zap.Error(err))

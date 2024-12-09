@@ -17,7 +17,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
+	opts := []goleak.Option{
+		goleak.IgnoreTopFunction("github.com/hashicorp/consul/sdk/freeport.checkFreedPorts"),
+	}
+	goleak.VerifyTestMain(m, opts...)
 }
 
 // Add helper function to start embedded etcd server
@@ -92,7 +95,7 @@ func newTestClient(t *testing.T, clientURL string) *clientv3.Client {
 	return cli
 }
 
-func TestCampaign(t *testing.T) {
+func TestETCDCampaign(t *testing.T) {
 	etcd, err := startEmbeddedEtcd(t)
 	require.NoError(t, err)
 	defer etcd.Close()

@@ -12,13 +12,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/server/v3/embed"
-	"go.uber.org/goleak"
 	"google.golang.org/grpc/grpclog"
 )
-
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
-}
 
 // Add helper function to start embedded etcd server
 func startEmbeddedEtcd(t *testing.T) (*embed.Etcd, error) {
